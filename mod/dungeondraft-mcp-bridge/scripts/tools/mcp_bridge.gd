@@ -49,9 +49,15 @@ const COLLECTIONS := {
 }
 
 var _server : TCP_Server = null
-var _conns := []         # array of { "peer": StreamPeerTCP, "buf": String }
+var _conns := []         # array of { "peer": StreamPeerTCP, "buf": String, "last": int }
 var _undo_stack := []    # bridge-managed undo ops (see _build_op / _apply_op)
 var _redo_stack := []
+var _frame := 0          # per-update-frame counter, used to reap idle connections
+# A connection is closed as a zombie if it hasn't carried any request bytes in
+# this many frames. The MCP client opens a fresh socket per call and closes it
+# right after reading the reply, so a peer that idles this long is dead and is
+# safe to disconnect (it frees the socket so DD's autobackup etc. aren't held).
+const IDLE_REAP_FRAMES := 180  # ~3s at 60fps
 
 
 # ---------------------------------------------------------------------------
@@ -73,31 +79,50 @@ func start():
 func update(delta : float):
 	if _server == null:
 		return
+	_frame += 1
 
 	while _server.is_connection_available():
 		var peer = _server.take_connection()
 		peer.set_no_delay(true)
-		_conns.append({ "peer": peer, "buf": "" })
+		_conns.append({ "peer": peer, "buf": "", "last": _frame })
 
-	var still_open := []
+	# Walk the current connections. The MCP client (bridge_client.py) opens a
+	# fresh socket per request and closes it immediately after reading the reply,
+	# so each peer is used for a single request/response exchange. Two things fix
+	# sockets lingering open (which could hold DD's autobackup / file I/O):
+	#   1. poll() every frame so a remote close is actually observed, and
+	#   2. actively disconnect any peer that goes idle, so even a client that
+	#      disappears without a clean close can't accumulate a zombie socket.
+	var survivors := []
 	for c in _conns:
 		var peer : StreamPeerTCP = c["peer"]
+		peer.poll()   # refresh status each frame so a disconnect is noticed
 		if peer.get_status() != StreamPeerTCP.STATUS_CONNECTED:
+			peer.disconnect_from_host()   # free the socket
 			continue
 		var avail = peer.get_available_bytes()
 		if avail > 0:
 			var res = peer.get_data(avail)   # [err, PoolByteArray]
 			if res[0] == OK:
 				c["buf"] += res[1].get_string_from_utf8()
+				c["last"] = _frame
+		var handled := false
 		var nl = c["buf"].find("\n")
 		while nl != -1:
 			var line = c["buf"].substr(0, nl).strip_edges()
 			c["buf"] = c["buf"].substr(nl + 1)
 			if line != "":
 				_handle_line(peer, line)
+				handled = true
 			nl = c["buf"].find("\n")
-		still_open.append(c)
-	_conns = still_open
+		# Reap: drop peers that are no longer connected or that have sat idle
+		# long enough that their client is certainly gone. Kept peers carry a
+		# reply line the client hasn't read yet or a request in flight.
+		if _frame - int(c["last"]) > IDLE_REAP_FRAMES:
+			peer.disconnect_from_host()
+			continue
+		survivors.append(c)
+	_conns = survivors
 
 
 # ---------------------------------------------------------------------------
