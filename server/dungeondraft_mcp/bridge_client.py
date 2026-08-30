@@ -56,24 +56,41 @@ class BridgeClient:
         data = (json.dumps(payload) + "\n").encode("utf-8")
 
         with self._lock:
-            # Reuse an open connection; reopen if it's gone or stale.
+            # Reuse an open connection; reopen if it's gone or stale by our own
+            # idle_timeout. The mod reaps connections on its own (shorter) clock
+            # too, so a socket we still think is open can have already been
+            # closed on the other end — retry once against a fresh connection
+            # before reporting an error.
             sock = self._connect_if_needed()
             try:
                 line = self._round_trip(sock, data)
-            except (OSError, socket.timeout, ValueError) as exc:
-                # The bridge likely crashed / reset / closed underneath us.
-                self._close()
-                raise self._wrap_error("while talking to the bridge", exc) from exc
-
-            if line is None:
-                # Remote closed cleanly without answering (e.g. bridge restarted).
-                self._close()
-                raise BridgeError(
-                    f"Bridge on {self.host}:{self.port} closed the connection without a response. "
-                    "Is Dungeondraft running with the MCP Bridge mod enabled and a map open?"
-                )
+            except (OSError, socket.timeout, ValueError):
+                line = self._retry_fresh(data)
+            else:
+                if line is None:
+                    # Remote closed cleanly without answering — stale reused
+                    # connection (e.g. the mod's idle reaper beat us to it).
+                    line = self._retry_fresh(data)
 
             return self._parse(line)
+
+    def _retry_fresh(self, data: bytes) -> bytes:
+        """Reopen the connection and retry a request once. Caller holds the lock."""
+        self._close()
+        sock = self._connect()
+        try:
+            line = self._round_trip(sock, data)
+        except (OSError, socket.timeout, ValueError) as exc:
+            self._close()
+            raise self._wrap_error("while talking to the bridge", exc) from exc
+
+        if line is None:
+            self._close()
+            raise BridgeError(
+                f"Bridge on {self.host}:{self.port} closed the connection without a response. "
+                "Is Dungeondraft running with the MCP Bridge mod enabled and a map open?"
+            )
+        return line
 
     # ------------------------------------------------------------- internals
 

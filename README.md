@@ -188,7 +188,8 @@ mod/dungeondraft-mcp-bridge/   the Dungeondraft mod (copy into DD's mods folder)
 server/                        the Python MCP server
   dungeondraft_mcp/server.py   MCP tool definitions
   dungeondraft_mcp/bridge_client.py  TCP/JSON client
-  test_bridge.py               standalone per-command smoke test
+  test_bridge.py               standalone per-command smoke test (needs DD running)
+  test_client.py               offline TCP-client reconnect/retry tests (no DD)
   demo_build.py                builds a visible sample room and leaves it
 PROTOCOL.md                    wire protocol + implementation notes
 ```

@@ -385,6 +385,10 @@ func _get_status() -> Dictionary:
 	var counts := {}
 	for kind in COLLECTIONS:
 		counts[kind] = _collection(level, kind).get_child_count()
+	# level.Portals only holds freestanding portals; wall-mounted doors/windows
+	# (the common case) live inside each wall's own `Portals` array instead —
+	# see _list_elements' handling of kind == "portals" for the same fix.
+	counts["portals"] += _wall_portal_count(level)
 	return _ok({
 		"map_open": true,
 		"level_id": Global.World.CurrentLevelId,
@@ -394,6 +398,17 @@ func _get_status() -> Dictionary:
 		"counts": counts,
 		"active_tool": Global.Editor.ActiveToolName,
 	})
+
+
+# Wall-mounted portals (the common case for doors/windows) aren't level
+# children, so get_status's generic per-collection child_count() misses them.
+func _wall_portal_count(level) -> int:
+	var n = 0
+	for wall in level.Walls.get_children():
+		var wp = wall.get("Portals")
+		if wp != null:
+			n += wp.size()
+	return n
 
 
 func _list_assets(req : Dictionary) -> Dictionary:
@@ -662,6 +677,13 @@ func _place_object(req : Dictionary) -> Dictionary:
 	prop.rotation = deg2rad(float(req.get("rotation", 0.0)))
 	if req.has("color") and prop.has_method("SetCustomColor"):
 		prop.SetCustomColor(_color(req["color"], Color(1, 1, 1)))
+	# Objects' parent chain is all z_as_relative=true and sums to an effective
+	# z of 0, but a pattern floor that predates place_pattern's absolute-z fix
+	# (or was laid by hand in the DD UI) sits in "Layer 100" at effective z 100
+	# — so objects rendered UNDERNEATH their own room's floor. Give objects an
+	# absolute z above that and below roofs (800).
+	prop.z_as_relative = false
+	prop.z_index = int(req.get("z", 200))
 	return _ok({ "id": _id(prop), "position": _vec(prop.position) })
 
 
@@ -1376,6 +1398,15 @@ func _duplicate_object(req : Dictionary) -> Dictionary:
 	prop.position = src.position + Vector2(float(req.get("dx", 64.0)), float(req.get("dy", 0.0)))
 	prop.scale = src.scale
 	prop.rotation = src.rotation
+	# Absolute z like _place_object so the copy isn't swallowed by a legacy
+	# relative-z floor. Mirror the source's own override if it has one (it was
+	# placed post-fix); otherwise fall back to the same default.
+	if src.get("z_as_relative") == false and src.get("z_index") != null:
+		prop.z_as_relative = false
+		prop.z_index = int(src.get("z_index"))
+	else:
+		prop.z_as_relative = false
+		prop.z_index = int(req.get("z", 200))
 	return _ok({ "id": _id(prop), "position": _vec(prop.position) })
 
 

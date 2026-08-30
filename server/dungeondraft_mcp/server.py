@@ -115,12 +115,15 @@ def place_object(
     rotation: float = 0.0,
     sorting: int = 0,
     color: str = "",
+    z: Optional[int] = None,
 ) -> dict:
     """Place an object (prop) on the current map. Returns the new element id.
 
     asset: an Objects asset path from list_assets(category='Objects').
     x, y: woxel coordinates; defaults to map center. rotation: degrees.
     sorting: 0=over, 1=under. color: optional tint as '#rrggbb'.
+    z: absolute z_index. Default 200 sits above pattern floors (which can reach
+      effective z 100) and below roofs (800); raise / lower as needed.
     """
     params = {"asset": asset, "scale": scale, "rotation": rotation, "sorting": sorting}
     if x is not None:
@@ -129,6 +132,8 @@ def place_object(
         params["y"] = y
     if color:
         params["color"] = color
+    if z is not None:
+        params["z"] = z
     return bridge.request("place_object", **params)
 
 

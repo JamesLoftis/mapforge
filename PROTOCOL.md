@@ -56,7 +56,8 @@ descriptor is `{ id, kind, position[x,y], rotation(deg), scale, asset? }`.
 
 `portals` includes **wall-mounted** portals (doors/windows), which live inside
 each wall's `Portals` array rather than `level.Portals` — `list_elements` walks
-the walls to surface them. A wall portal describes as `{ id, kind:"wall_portal",
+the walls to surface them, and `get_status`'s `counts.portals` sums them in too.
+A wall portal describes as `{ id, kind:"wall_portal",
 wall_id, position[x,y], normal[x,y], facing(deg), radius, closed, asset? }`
 where `position` is the door's gap center and `normal` is the outward unit
 vector (perpendicular to the wall, pointing out of the room). To route a road to
@@ -72,7 +73,7 @@ node; default color is black.
 
 | cmd | params |
 | --- | --- |
-| `place_object` | `asset`, `x?`, `y?`, `scale=1`, `rotation=0`, `sorting=0`, `color?` |
+| `place_object` | `asset`, `x?`, `y?`, `scale=1`, `rotation=0`, `sorting=0`, `color?`, `z?` |
 | `draw_wall` | `points[[x,y]...]`, `asset?`, `loop=false`, `shadow=true`, `type=0`, `joint=1`, `color?` |
 | `draw_path` | `points[[x,y]...]`, `asset`, `layer=0`, `sorting=0`, `smoothness?`, `width?` |
 | `add_light` | `x?`, `y?`, `color?`, `energy=1`, `range=1`, `shadows=true`, `asset?` |
@@ -204,6 +205,13 @@ Ctrl+Z in Dungeondraft.
   absolute `z_index` (default `z` = -100, between FloorShapes at -200 and Objects
   at 0). Do **not** use `PatternShapeTool.SetLayer()` on an uncreated index — it
   hard-crashes the mod (GDScript has no try/catch; valid range undocumented).
+- **`place_object`** — Objects' parent chain is all `z_as_relative=true` and sums
+  to an effective z of **0**, while any pattern floor that predates the
+  `place_pattern` absolute-z fix (or was laid in the DD UI) sits in "Layer 100"
+  at effective z **100** — so objects rendered **underneath their own room's
+  floor**. `place_object`/`duplicate_object` therefore set `z_as_relative =
+  false` with an absolute `z_index` (default 200: above that 100, below roofs'
+  800). Pass `z` to layer objects above/below other things.
 - **default tints** — `draw_wall` / `place_pattern` apply the texture's own
   default color when no `color` is given (walls via `WallTool.GetWallColor(tex)`,
   patterns by reading back `PatternShapeTool.Color` after setting the texture),
