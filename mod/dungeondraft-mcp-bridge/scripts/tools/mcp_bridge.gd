@@ -53,11 +53,11 @@ var _conns := []         # array of { "peer": StreamPeerTCP, "buf": String, "las
 var _undo_stack := []    # bridge-managed undo ops (see _build_op / _apply_op)
 var _redo_stack := []
 var _frame := 0          # per-update-frame counter, used to reap idle connections
-# A connection is closed as a zombie if it hasn't carried any request bytes in
-# this many frames. The MCP client opens a fresh socket per call and closes it
-# right after reading the reply, so a peer that idles this long is dead and is
-# safe to disconnect (it frees the socket so DD's autobackup etc. aren't held).
-const IDLE_REAP_FRAMES := 180  # ~3s at 60fps
+# Backstop reap: a peer whose FIN Godot hasn't surfaced yet is dropped after
+# this long. Deliberately ~60s — far past the MCP client's own idle_timeout
+# (10s), so it never cuts a connection a live client is holding (that's what
+# makes disconnect_from_host() abort/RST the socket).
+const IDLE_REAP_FRAMES := 3600  # ~60s at 60fps
 
 
 # ---------------------------------------------------------------------------
@@ -86,19 +86,20 @@ func update(delta : float):
 		peer.set_no_delay(true)
 		_conns.append({ "peer": peer, "buf": "", "last": _frame })
 
-	# Walk the current connections. The MCP client (bridge_client.py) opens a
-	# fresh socket per request and closes it immediately after reading the reply,
-	# so each peer is used for a single request/response exchange. Two things fix
-	# sockets lingering open (which could hold DD's autobackup / file I/O):
-	#   1. poll() every frame so a remote close is actually observed, and
-	#   2. actively disconnect any peer that goes idle, so even a client that
-	#      disappears without a clean close can't accumulate a zombie socket.
+	# Walk the current connections. The MCP client (bridge_client.py) keeps ONE
+	# persistent connection and reaps it itself once idle (default 10s), so we
+	# must NOT race its clock with a short reap of our own — cutting a live-but-
+	# idle peer makes Godot 3.4's disconnect_from_host() abort the connection
+	# (RST, which the client reports as WinError 10053). We only drop peers when
+	# poll() shows the remote is gone, with the long backstop above for FINs
+	# Godot hasn't surfaced. Every drop drains queued bytes first, since
+	# disconnecting with unread data is what actually triggers the RST.
 	var survivors := []
 	for c in _conns:
 		var peer : StreamPeerTCP = c["peer"]
 		peer.poll()   # refresh status each frame so a disconnect is noticed
 		if peer.get_status() != StreamPeerTCP.STATUS_CONNECTED:
-			peer.disconnect_from_host()   # free the socket
+			_drop_peer(peer)
 			continue
 		var avail = peer.get_available_bytes()
 		if avail > 0:
@@ -115,14 +116,27 @@ func update(delta : float):
 				_handle_line(peer, line)
 				handled = true
 			nl = c["buf"].find("\n")
-		# Reap: drop peers that are no longer connected or that have sat idle
-		# long enough that their client is certainly gone. Kept peers carry a
-		# reply line the client hasn't read yet or a request in flight.
+		# Backstop: by 60s idle any client has reaped its socket itself, so a
+		# drop here can only free a zombie DD never saw close.
 		if _frame - int(c["last"]) > IDLE_REAP_FRAMES:
-			peer.disconnect_from_host()
+			_drop_peer(peer)
 			continue
 		survivors.append(c)
 	_conns = survivors
+
+
+# Drop a peer's socket. Drains whatever's buffered before disconnecting:
+# Godot 3.4's StreamPeerTCP.disconnect_from_host() sends an RST (aborts the
+# connection) if there are still unread incoming bytes, which the MCP client
+# surfaces as a WinError 10053 it can't always attribute to a dead bridge.
+func _drop_peer(peer : StreamPeerTCP):
+	var avail = peer.get_available_bytes()
+	while avail > 0:
+		var res = peer.get_data(avail)
+		if res[0] != OK:
+			break
+		avail = peer.get_available_bytes()
+	peer.disconnect_from_host()
 
 
 # ---------------------------------------------------------------------------
@@ -698,7 +712,10 @@ func _draw_wall(req : Dictionary) -> Dictionary:
 		bool(req.get("loop", false)), bool(req.get("shadow", true)),
 		int(req.get("type", 0)), int(req.get("joint", 1)), true)
 	if wall == null: return _err("AddWall returned null (bad asset/points?)")
-	return _ok({ "id": _id(wall), "point_count": pts.size() })
+	return _ok({
+		"id": _id(wall), "points": _points_list(pts),
+		"loop": bool(req.get("loop", false)),
+	})
 
 
 # Wall tint: use the caller's `color` if given, else the texture's own default
@@ -734,7 +751,7 @@ func _draw_path(req : Dictionary) -> Dictionary:
 	if req.has("width"):
 		path.SetWidthScale(float(req["width"]))
 	path.UpdateGradient()
-	return _ok({ "id": _id(path), "point_count": pts.size() })
+	return _ok({ "id": _id(path), "points": _points_list(pts) })
 
 
 func _add_light(req : Dictionary) -> Dictionary:
@@ -854,7 +871,11 @@ func _add_roof(req : Dictionary) -> Dictionary:
 	var roof = level.Roofs.CreateRoof(int(req.get("sorting", 0)))
 	roof.Set(pts, float(req.get("width", 256.0)), int(req.get("type", 0)))  # type: 0 gable,1 hip,2 dormer
 	roof.SetTileTexture(tex)
-	return _ok({ "id": _id(roof), "ridge_points": pts.size() })
+	return _ok({
+		"id": _id(roof), "points": _points_list(pts),
+		"width": float(req.get("width", 256.0)),
+		"type": int(req.get("type", 0)),
+	})
 
 
 # Place a tiled floor/pattern shape (the "Floor" / Pattern Shape Tool in the UI).
@@ -929,6 +950,14 @@ func _place_pattern(req : Dictionary) -> Dictionary:
 	# and z_index=`z` (default -100, between FloorShapes at -200 and Objects at 0).
 	var all = shapes.GetShapes()
 	var result := { "shape": kind, "category": category, "shape_count": all.size() }
+	# Echo the drawn outline so the floor is readable from its create response:
+	# a polygon's corners as given, or a rect's four corners.
+	if kind == "rect":
+		var r = req["rect"]
+		var rx = float(r[0]); var ry = float(r[1]); var rw = float(r[2]); var rh = float(r[3])
+		result["points"] = [[rx, ry], [rx + rw, ry], [rx + rw, ry + rh], [rx, ry + rh]]
+	else:
+		result["points"] = _points_list(_points(req["points"]))
 	if color is Color:
 		result["color"] = "#" + color.to_html(true)
 	if used_default:
@@ -1708,6 +1737,44 @@ func _describe(node) -> Dictionary:
 	var tex_path = _texture_path(node, t)
 	if tex_path != "":
 		d["asset"] = tex_path
+	# Surface the actual geometry for shape-bearing kinds, using the member
+	# each DD class actually exposes (per the Modding API): Wall.Points (world),
+	# Pathway.GlobalEditPoints (world edit points), Roof.points/width/type, and
+	# PatternShape.GlobalPolygon (world). So a caller can Read a wall's shape
+	# instead of only an id + position.
+	if t in [1, 5, 7, 8]:
+		var pts := []
+		if t == 5:      # path
+			pts = _points_list(node.get("GlobalEditPoints"))
+		elif t == 7:    # pattern shape
+			pts = _points_list(node.get("GlobalPolygon"))
+		elif t == 8:    # roof (lowercase member!)
+			pts = _points_list(node.get("points"))
+		else:           # wall
+			pts = _points_list(node.get("Points"))
+		if pts.size() > 0:
+			d["points"] = pts
+		if t == 1:  # wall
+			var loop = node.get("Loop")
+			if loop != null:
+				d["loop"] = bool(loop)
+			var wtype = node.get("Type")
+			if wtype != null:
+				d["type"] = int(wtype)
+			var joint = node.get("Joint")
+			if joint != null:
+				d["joint"] = int(joint)
+		elif t == 5:  # path
+			var sm = node.get("Smoothness")
+			if sm != null:
+				d["smoothness"] = float(sm)
+		elif t == 8:  # roof
+			var w = node.get("width")
+			if w != null:
+				d["width"] = float(w)
+			var rtype = node.get("type")
+			if rtype != null:
+				d["type"] = int(rtype)
 	return d
 
 
@@ -1749,6 +1816,24 @@ func _points(raw) -> PoolVector2Array:
 		if typeof(p) == TYPE_ARRAY and p.size() >= 2:
 			pts.append(Vector2(float(p[0]), float(p[1])))
 	return pts
+
+
+# JSON-safe geometry: a PoolVector2Array (or Array of Vector2) -> [[x,y], ...].
+# Returns [] when the node exposes no usable outline, so callers can gate on
+# `size() > 0` rather than leaking nulls into descriptors.
+func _points_list(raw) -> Array:
+	if raw == null:
+		return []
+	var out := []
+	if raw is PoolVector2Array:
+		for p in raw:
+			out.append([p.x, p.y])
+		return out
+	if typeof(raw) == TYPE_ARRAY:
+		for p in raw:
+			if p is Vector2:
+				out.append([p.x, p.y])
+	return out
 
 
 # Accepts "#rrggbb" / "rrggbb" string, or [r,g,b] / [r,g,b,a] floats 0..1.

@@ -5,9 +5,11 @@ A deliberately tiny protocol so both halves stay trivial to extend.
 - **Transport:** TCP on `127.0.0.1:8787` (override the mod's `PORT` const and the
   server's `DD_BRIDGE_PORT` env var together).
 - **Framing:** one JSON object per line, terminated by `\n`, UTF-8.
-- **Model:** request/response. The MCP server opens a connection, writes one
-  request line, reads one response line. The mod also tolerates multiple
-  requests on a persistent connection.
+- **Model:** request/response, one request at a time over a **single persistent
+  connection**. The MCP server keeps the socket alive itself: a background
+  watchdog pings the mod every few seconds while idle and reconnects the moment
+  the link breaks, and transport failures are retried on a fresh connection
+  before any error reaches the caller.
 
 ## Request
 
@@ -54,6 +56,12 @@ Coordinates are **woxel** (world pixel) space; map center is in
 `kind` ∈ `objects, walls, lights, paths, portals, roofs, texts`. An element
 descriptor is `{ id, kind, position[x,y], rotation(deg), scale, asset? }`.
 
+Shape-bearing kinds also report their world-space geometry as `points:
+[[x,y],...]` — the wall outline (`Wall.Points`), path edit polyline
+(`Pathway.GlobalEditPoints`), roof RIDGE line (`Roof.points`) and pattern-shape
+polygon (`PatternShape.GlobalPolygon`). Walls add `loop`/`type`/`joint`, paths
+add `smoothness`, roofs add `width`/`type`.
+
 `portals` includes **wall-mounted** portals (doors/windows), which live inside
 each wall's `Portals` array rather than `level.Portals` — `list_elements` walks
 the walls to surface them, and `get_status`'s `counts.portals` sums them in too.
@@ -70,6 +78,11 @@ together via `SetFont` because `SetFontSize` alone doesn't stick on a fresh
 node; default color is black.
 
 ### Create (each returns `{ id, ... }`)
+
+Shape-bearing creates echo the geometry they drew, so you can `get_element`
+on the returned id without a follow-up call: `draw_wall` → `{ id, points,
+loop }`, `draw_path` → `{ id, points }`, `add_roof` → `{ id, points,
+width, type }`, `place_pattern` → `{ id, points, ... }`.
 
 | cmd | params |
 | --- | --- |

@@ -3,10 +3,10 @@
 
 Runs a fake socket server locally and checks that BridgeClient:
   - reuses a single persistent connection across requests,
-  - retries once on a freshly opened connection when a stale socket dies
-    remotely (closed without answering, or reset mid-response), and
-  - surfaces a clean BridgeError when the bridge is unreachable or both
-    attempts fail, without hanging or looping.
+  - retries on freshly opened connections (up to 3 attempts) when a stale
+    socket dies remotely (closed without answering, or reset mid-response), and
+  - surfaces a clean BridgeError when the bridge is unreachable or every
+    attempt fails, without hanging or looping.
 
     python test_client.py
 """
@@ -15,7 +15,7 @@ import json
 import socket
 import threading
 
-from dungeondraft_mcp.bridge_client import BridgeClient, BridgeError
+from dungeondraft_mcp.bridge_client import BridgeClient, BridgeError, BridgeUnreachableError
 
 RECEIVED: list[dict] = []
 
@@ -61,6 +61,13 @@ def _reset_mid_response(conn: socket.socket) -> None:
     conn.close()
 
 
+def _reject_no_map(conn: socket.socket) -> None:
+    line = read_line(conn)
+    if line:
+        RECEIVED.append(json.loads(line.decode()))
+    conn.sendall((json.dumps({"ok": False, "error": "no map open"}) + "\n").encode())
+
+
 class FakeBridge:
     """Serve `handlers` on sequential connections (one handler per connection)."""
 
@@ -98,7 +105,9 @@ def main() -> int:
         RECEIVED.clear()
 
     def client(port, **kwargs) -> BridgeClient:
-        return BridgeClient("127.0.0.1", port, timeout=2.0, idle_timeout=60, **kwargs)
+        return BridgeClient(
+            "127.0.0.1", port, timeout=2.0, idle_timeout=60, watchdog=False, **kwargs
+        )
 
     # Single persistent connection reused across calls (no reconnect churn).
     def c1():
@@ -143,18 +152,34 @@ def main() -> int:
             raise AssertionError("expected BridgeError")
     case("both attempts dead -> BridgeError", c4)
 
-    # Bridge completely unreachable -> clean BridgeError, no hang.
+    # Bridge completely unreachable -> clean BridgeUnreachableError, no hang.
     def c5():
         c = client(1)  # nothing listens on port 1, connect fails fast here
         try:
             c.request("ping")
-        except BridgeError as exc:
+        except BridgeUnreachableError as exc:
             assert "Could not reach" in str(exc)
         else:
-            raise AssertionError("expected BridgeError")
-    case("bridge down -> BridgeError", c5)
+            raise AssertionError("expected BridgeUnreachableError")
+    case("bridge down -> BridgeUnreachableError", c5)
 
-    print(f"\n{5 - failures} passed, {failures} failed.")
+    # A bridge rejection ("no map open") is a real answer, not a transport
+    # failure: it must surface immediately and never be re-sent.
+    def c7():
+        reset_received()
+        bridge = FakeBridge([_reject_no_map])
+        c = client(bridge.port)
+        try:
+            c.request("get_status")
+        except BridgeError as exc:
+            assert "no map open" in str(exc)
+            assert not isinstance(exc, BridgeUnreachableError)
+        else:
+            raise AssertionError("expected BridgeError")
+        assert len(RECEIVED) == 1, RECEIVED  # exactly one send, no retry
+    case("app rejection not retried", c7)
+
+    print(f"\n{6 - failures} passed, {failures} failed.")
     return 1 if failures else 0
 
 
