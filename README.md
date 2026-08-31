@@ -32,6 +32,7 @@ forwards calls as JSON. See [PROTOCOL.md](PROTOCOL.md) for the wire format.
 ## What the AI can do
 
 - **Inspect:** `get_status`, `list_levels`, `list_elements`, `get_element`,
+  `dump_state` (whole-level snapshot in one call),
   `list_asset_categories`, `list_assets` (with substring search).
 - **Create:** `place_object`, `draw_wall`, `draw_path`, `add_light`,
   `add_portal`, `add_roof`, `add_text`, `place_pattern` (tiled floor shapes —

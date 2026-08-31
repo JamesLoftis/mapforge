@@ -51,7 +51,16 @@ Coordinates are **woxel** (world pixel) space; map center is in
 | `list_assets` | `category="Objects"`, `search=""`, `limit=100` | `{ category, total, matched, returned, assets[] }` |
 | `list_elements` | `kind="objects"`, `limit=200` | `{ kind, count, elements[] }` |
 | `get_element` | `id` | element descriptor |
+| `dump_state` | — | `{ count, elements[] }` — the whole level in one call |
 | `list_levels` | — | `{ current_index, levels[] }` |
+
+`dump_state` walks **every** collection in one round trip: wall-mounted portals
+(from inside each wall), pattern shapes (`level.PatternShapes.GetShapes()`),
+then each `objects, walls, lights, paths, portals, roofs, texts` group. Each
+element uses the same descriptor as `get_element`, so shape-bearing kinds carry
+their full geometry — the point-in-time snapshot backup/restore and provider
+`Read`/import are built on. `kind` ∈ `objects, walls, lights, paths, portals,
+roofs, texts` (plus `wall_portal`/`pattern` inside a dump).
 
 `kind` ∈ `objects, walls, lights, paths, portals, roofs, texts`. An element
 descriptor is `{ id, kind, position[x,y], rotation(deg), scale, asset? }`.
@@ -90,7 +99,7 @@ width, type }`, `place_pattern` → `{ id, points, ... }`.
 | `draw_wall` | `points[[x,y]...]`, `asset?`, `loop=false`, `shadow=true`, `type=0`, `joint=1`, `color?` |
 | `draw_path` | `points[[x,y]...]`, `asset`, `layer=0`, `sorting=0`, `smoothness?`, `width?` |
 | `add_light` | `x?`, `y?`, `color?`, `energy=1`, `range=1`, `shadows=true`, `asset?` |
-| `add_portal` | `asset`, `x?`, `y?`, `closed=false`, `radius=64`, `mount="wall"`, `snap_max=256`, `flip=false`, `fallback_free=true`, `rotation=0` |
+| `add_portal` | `asset`, `x?`, `y?`, `closed=false`, `radius=64`, `mount="wall"`, `snap_max=256`, `flip=false`, `fallback_free=true`, `rotation=0`, `wall_id?` |
 | `add_roof` | `points[[x,y]...]` (the RIDGE line), `asset`, `width=256`, `type=0`, `sorting=0` |
 | `add_text` | `text`, `x?`, `y?`, `size?`, `color?`, `font?` |
 | `place_pattern` | `asset`, `rect=[x,y,w,h]` **or** `points=[[x,y]...]`, `category="Patterns"`, `color?`, `rotation?` |
@@ -134,6 +143,12 @@ server uses a temp path and reads it back as an image).
 | cmd | params | result |
 | --- | --- | --- |
 | `screenshot` | `path` | `{ path, width, height }` — window grab, synchronous |
+
+`screenshot` calls `VisualServer.force_draw()` first so it captures a fresh frame
+even when the DD window is unfocused or idle. A minimized window stops the OS
+from compositing, so the frame can go stale there — for a capture that works
+while DD is minimized, render the map with `export_map` instead (background
+thread, headless).
 | `export_map` | `path`, `ppi=40` | `{ path, ppi, async }` — full-map render on a background thread; poll `path` for the file |
 
 ### Camera
@@ -284,4 +299,12 @@ Ctrl+Z in Dungeondraft.
   (`Level.CreateFreestandingPortal`); when `mount:"wall"` and no wall is near it
   falls back to freestanding unless `fallback_free:false`. `flip` reverses the
   facing. The response `kind` is `"wall_portal"` when mounted, `"portal"` when
-  freestanding.
+  freestanding. Pass `wall_id` to mount on a **specific wall** — the bridge
+  mounts on that wall's nearest segment to `x`/`y`, skipping the map-wide
+  nearest-wall search (deterministic input for declarative tools; errors if
+  the id isn't a wall).
+
+All shape/params inputs are validated defensively (A5): out-of-range terrain
+`slot` (0–7), `radius`/`width`/`ppi` ≤ 0, unknown `type`/`joint` enums, and
+malformed `points` arrays all return `_err(...)` — they can never crash the
+dispatch loop (GDScript has no try/catch).

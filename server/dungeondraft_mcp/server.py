@@ -97,6 +97,18 @@ def get_element(id: int) -> dict:
 
 
 @mcp.tool()
+def dump_state() -> dict:
+    """Dump the whole current level: every element (walls, paths, objects, lights, portals,
+    roofs, texts, pattern shapes) with full geometry, in one round trip.
+
+    Shape-bearing kinds carry their real world-space geometry (wall points/loop,
+    path points, roof points/width/type, pattern polygon). Use this for a
+    point-in-time snapshot, backup/restore, or drift inspection.
+    """
+    return bridge.request("dump_state")
+
+
+@mcp.tool()
 def list_levels() -> dict:
     """List the map's levels (floors) with their index, id and label, plus the current index."""
     return bridge.request("list_levels")
@@ -214,6 +226,7 @@ def add_portal(
     flip: bool = False,
     fallback_free: bool = True,
     rotation: float = 0.0,
+    wall_id: Optional[int] = None,
 ) -> dict:
     """Add a door/window portal at a woxel position. Returns the new element id.
 
@@ -227,6 +240,8 @@ def add_portal(
     flip: reverse the door's facing. fallback_free: if mount='wall' but no wall
     is within snap_max, place a freestanding portal instead of erroring.
     rotation: degrees, freestanding only.
+    wall_id: mount on a SPECIFIC wall (its nearest segment to x/y), skipping
+    the nearest-wall search — deterministic input for declarative tools.
     """
     params = {
         "asset": asset,
@@ -242,6 +257,8 @@ def add_portal(
         params["x"] = x
     if y is not None:
         params["y"] = y
+    if wall_id is not None:
+        params["wall_id"] = wall_id
     return bridge.request("add_portal", **params)
 
 
