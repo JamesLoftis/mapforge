@@ -1,0 +1,695 @@
+package ddprovider
+
+import (
+	"context"
+
+	"dungeondraft-mcp/provider/internal/bridge"
+
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+)
+
+// nodeResourceBase carries the bridge client that Configure hands every
+// resource, plus the shared use-it-or-diagnose helper.
+type nodeResourceBase struct {
+	client *bridge.Client
+}
+
+func (b *nodeResourceBase) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
+		return
+	}
+	pd, ok := req.ProviderData.(*providerData)
+	if !ok || pd == nil || pd.client == nil {
+		resp.Diagnostics.AddError("Invalid provider configuration", "Provider data did not carry a bridge client.")
+		return
+	}
+	b.client = pd.client
+}
+
+func (b *nodeResourceBase) clientFor(resp *resource.CreateResponse) *bridge.Client {
+	if b.client != nil {
+		return b.client
+	}
+	resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available (missing provider block?).")
+	return nil
+}
+
+// deleteID implements Delete by running delete_element on a stored id.
+func (b *nodeResourceBase) deleteID(ctx context.Context, id string, resp *resource.DeleteResponse) {
+	if b.client == nil {
+		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
+		return
+	}
+	resp.Diagnostics.Append(deleteNode(ctx, b.client, id)...)
+}
+
+// pointElemType is the per-point element type ([x, y], a list of two ints)
+// shared by every kind whose `points` attribute is a list of [x,y] pairs.
+var pointElemType = types.ListType{ElemType: types.Int64Type}
+
+// noPlan is the Update stub for write-mostly resources (all their attributes
+// are RequiresReplace, so Terraform never invokes it).
+func noUpdate(_ context.Context, _ resource.UpdateRequest, resp *resource.UpdateResponse) {
+	resp.Diagnostics.AddWarning("No in-place update", "This resource replaces on change instead of updating in place.")
+}
+
+// idAttribute is the computed element-id attribute.
+func idAttribute() schema.StringAttribute {
+	return schema.StringAttribute{Computed: true}
+}
+
+// ---- dungeondraft_wall (draw_wall) ---------------------------------------
+
+type wallResource struct{ *nodeResourceBase }
+
+func NewWallResource() resource.Resource { return &wallResource{&nodeResourceBase{}} }
+
+func (r *wallResource) Metadata(_ context.Context, _ resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = typeName + "_wall"
+}
+
+type wallModel struct {
+	ID     types.String `tfsdk:"id"`
+	Points types.List   `tfsdk:"points"`
+	Asset  types.String `tfsdk:"asset"`
+	Loop   types.Bool   `tfsdk:"loop"`
+	Type   types.Int64  `tfsdk:"type"`
+	Joint  types.Int64  `tfsdk:"joint"`
+	Color  types.String `tfsdk:"color"`
+	Shadow types.Bool   `tfsdk:"shadow"`
+}
+
+func (r *wallResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "Draw a wall through woxel points (draw_wall). Shape fields replace; the bridge has no reshape API yet.",
+		Attributes: map[string]schema.Attribute{
+			"id":     idAttribute(),
+			"points": schema.ListAttribute{Required: true, ElementType: pointElemType, Description: "Polyline in woxels."},
+			// Read syncs asset/loop/type/joint from the live wall (A2 geometry
+			// read), so these must be Optional+Computed: a value the bridge
+			// applied by default (config left it unset) is not drift, only a
+			// mismatch against an explicitly-set config value is.
+			"asset":  schema.StringAttribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"loop":   schema.BoolAttribute{Optional: true, Computed: true, Description: "Close into a loop (a room).", PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()}},
+			"type":   schema.Int64Attribute{Optional: true, Computed: true, Description: "0=auto, 1=manual, 2=cave.", PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()}},
+			"joint":  schema.Int64Attribute{Optional: true, Computed: true, Description: "0=sharp, 1=bevel, 2=round.", PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()}},
+			"color":  schema.StringAttribute{Optional: true},
+			"shadow": schema.BoolAttribute{Optional: true},
+		},
+	}
+}
+
+func (r *wallResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	c := r.clientFor(resp)
+	if c == nil {
+		return
+	}
+	var m wallModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &m)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	params := map[string]any{}
+	if pts, ok, diags := attrToPointList(ctx, m.Points); ok {
+		params["points"] = pts
+	} else {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
+	if !m.Asset.IsNull() && m.Asset.ValueString() != "" {
+		params["asset"] = m.Asset.ValueString()
+	}
+	if !m.Loop.IsNull() {
+		params["loop"] = m.Loop.ValueBool()
+	}
+	if !m.Type.IsNull() {
+		params["type"] = m.Type.ValueInt64()
+	}
+	if !m.Joint.IsNull() {
+		params["joint"] = m.Joint.ValueInt64()
+	}
+	if !m.Color.IsNull() && m.Color.ValueString() != "" {
+		params["color"] = m.Color.ValueString()
+	}
+	if !m.Shadow.IsNull() {
+		params["shadow"] = m.Shadow.ValueBool()
+	}
+	id, diags := createNode(ctx, c, "draw_wall", params)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	m.ID = types.StringValue(id)
+	coerceUnknownToNull(&m)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+}
+
+func (r *wallResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var m wallModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if r.client == nil {
+		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
+		return
+	}
+	// Fully descriptor-aware: walls expose real geometry, so Read syncs shape
+	// fields and surfaces hand-edits as drift (ROADMAP Part B, A2).
+	desc, exists, diags := fetchNode(ctx, r.client, m.ID.ValueString())
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !exists {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	if a, ok := desc["asset"].(string); ok && a != "" {
+		m.Asset = types.StringValue(a)
+	}
+	if pts, ok := desc["points"].([]any); ok {
+		m.Points = pointListToAttr(ctx, pts)
+	}
+	if v, ok := desc["loop"].(bool); ok {
+		m.Loop = types.BoolValue(v)
+	}
+	if v := numAsInt64(desc["type"]); desc["type"] != nil {
+		m.Type = types.Int64Value(v)
+	}
+	if v := numAsInt64(desc["joint"]); desc["joint"] != nil {
+		m.Joint = types.Int64Value(v)
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+}
+
+func (r *wallResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	noUpdate(ctx, req, resp)
+}
+
+func (r *wallResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	if r.client == nil {
+		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
+		return
+	}
+	var m wallModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(deleteNode(ctx, r.client, m.ID.ValueString())...)
+}
+
+func (r *wallResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// ---- dungeondraft_portal (add_portal) ------------------------------------
+
+type portalResource struct{ *nodeResourceBase }
+
+func NewPortalResource() resource.Resource { return &portalResource{&nodeResourceBase{}} }
+
+func (r *portalResource) Metadata(_ context.Context, _ resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = typeName + "_portal"
+}
+
+type portalModel struct {
+	ID           types.String  `tfsdk:"id"`
+	Asset        types.String  `tfsdk:"asset"`
+	X            types.Float64 `tfsdk:"x"`
+	Y            types.Float64 `tfsdk:"y"`
+	WallID       types.Int64   `tfsdk:"wall_id"`
+	Radius       types.Float64 `tfsdk:"radius"`
+	Closed       types.Bool    `tfsdk:"closed"`
+	Flip         types.Bool    `tfsdk:"flip"`
+	Mount        types.String  `tfsdk:"mount"`
+	SnapMax      types.Float64 `tfsdk:"snap_max"`
+	Rotation     types.Float64 `tfsdk:"rotation"`
+	FallbackFree types.Bool    `tfsdk:"fallback_free"`
+}
+
+func (r *portalResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "A door/window portal (add_portal). Give wall_id to mount on a specific wall deterministically; omit it to snap to the nearest wall.",
+		Attributes: map[string]schema.Attribute{
+			"id":    idAttribute(),
+			"asset": schema.StringAttribute{Required: true, Description: "A Portals asset path."},
+			// Read syncs wall_id/closed/radius/x/y from the live portal, so
+			// these must be Optional+Computed — see the wall schema's comment.
+			"x":             schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
+			"y":             schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
+			"wall_id":       schema.Int64Attribute{Optional: true, Computed: true, Description: "Mount on this specific wall (skips nearest-wall search). Links to a dungeondraft_wall.", PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()}},
+			"radius":        schema.Float64Attribute{Optional: true, Computed: true, Description: "Door half-width (~128 = 1-tile door).", PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
+			"closed":        schema.BoolAttribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()}},
+			"flip":          schema.BoolAttribute{Optional: true},
+			"mount":         schema.StringAttribute{Optional: true, Description: "wall or free."},
+			"snap_max":      schema.Float64Attribute{Optional: true, Description: "Max woxel distance a wall may be and still capture the portal."},
+			"rotation":      schema.Float64Attribute{Optional: true, Description: "Degrees; freestanding only."},
+			"fallback_free": schema.BoolAttribute{Optional: true},
+		},
+	}
+}
+
+func (r *portalResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	c := r.clientFor(resp)
+	if c == nil {
+		return
+	}
+	var m portalModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &m)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if m.Asset.IsNull() || m.Asset.ValueString() == "" {
+		resp.Diagnostics.Append(attrError("asset")...)
+		return
+	}
+	params := map[string]any{"asset": m.Asset.ValueString()}
+	if !m.X.IsNull() {
+		params["x"] = m.X.ValueFloat64()
+	}
+	if !m.Y.IsNull() {
+		params["y"] = m.Y.ValueFloat64()
+	}
+	if !m.WallID.IsNull() {
+		params["wall_id"] = m.WallID.ValueInt64()
+	}
+	if !m.Radius.IsNull() {
+		params["radius"] = m.Radius.ValueFloat64()
+	}
+	if !m.Closed.IsNull() {
+		params["closed"] = m.Closed.ValueBool()
+	}
+	if !m.Flip.IsNull() {
+		params["flip"] = m.Flip.ValueBool()
+	}
+	if !m.Mount.IsNull() && m.Mount.ValueString() != "" {
+		params["mount"] = m.Mount.ValueString()
+	}
+	if !m.SnapMax.IsNull() {
+		params["snap_max"] = m.SnapMax.ValueFloat64()
+	}
+	if !m.Rotation.IsNull() {
+		params["rotation"] = m.Rotation.ValueFloat64()
+	}
+	if !m.FallbackFree.IsNull() {
+		params["fallback_free"] = m.FallbackFree.ValueBool()
+	}
+	id, diags := createNode(ctx, c, "add_portal", params)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	m.ID = types.StringValue(id)
+	coerceUnknownToNull(&m)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+}
+
+func (r *portalResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var m portalModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if r.client == nil {
+		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
+		return
+	}
+	// Portals expose wall_id + geometry, so Read syncs the mounting and size
+	// fields and surfaces hand-edits as drift.
+	desc, exists, diags := fetchNode(ctx, r.client, m.ID.ValueString())
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !exists {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	if v := numAsInt64(desc["wall_id"]); desc["wall_id"] != nil {
+		m.WallID = types.Int64Value(v)
+	}
+	if v, ok := desc["closed"].(bool); ok {
+		m.Closed = types.BoolValue(v)
+	}
+	if v := numAsFloat(desc["radius"]); desc["radius"] != nil {
+		m.Radius = types.Float64Value(v)
+	}
+	if a, ok := desc["asset"].(string); ok && a != "" {
+		m.Asset = types.StringValue(a)
+	}
+	if pos, ok := desc["position"].([]any); ok && len(pos) == 2 {
+		m.X = types.Float64Value(numAsFloat(pos[0]))
+		m.Y = types.Float64Value(numAsFloat(pos[1]))
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+}
+
+func (r *portalResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	noUpdate(ctx, req, resp)
+}
+
+func (r *portalResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	if r.client == nil {
+		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
+		return
+	}
+	var m portalModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(deleteNode(ctx, r.client, m.ID.ValueString())...)
+}
+
+func (r *portalResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// ---- dungeondraft_object (place_object) -----------------------------------
+
+type objectResource struct{ *nodeResourceBase }
+
+func NewObjectResource() resource.Resource { return &objectResource{&nodeResourceBase{}} }
+
+func (r *objectResource) Metadata(_ context.Context, _ resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = typeName + "_object"
+}
+
+type objectModel struct {
+	ID       types.String  `tfsdk:"id"`
+	Asset    types.String  `tfsdk:"asset"`
+	X        types.Float64 `tfsdk:"x"`
+	Y        types.Float64 `tfsdk:"y"`
+	Rotation types.Float64 `tfsdk:"rotation"`
+	Scale    types.Float64 `tfsdk:"scale"`
+	Sorting  types.Int64   `tfsdk:"sorting"`
+	Color    types.String  `tfsdk:"color"`
+	Z        types.Int64   `tfsdk:"z"`
+}
+
+func (r *objectResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "A prop on the map (place_object). x/y update in place via move_element; the rest replace.",
+		Attributes: map[string]schema.Attribute{
+			"id":    idAttribute(),
+			"asset": schema.StringAttribute{Required: true, Description: "An Objects asset path."},
+			// Read syncs position/rotation/scale from the live object, so these
+			// must be Optional+Computed (values DD applied by default are not
+			// drift, only a mismatch against an explicitly-set config value is).
+			"x":        schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
+			"y":        schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
+			"rotation": schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
+			"scale":    schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
+			"sorting":  schema.Int64Attribute{Optional: true, Description: "0=over, 1=under."},
+			"color":    schema.StringAttribute{Optional: true},
+			"z":        schema.Int64Attribute{Optional: true, Description: "Absolute z_index (default 200; above legacy floors, below roofs)."},
+		},
+	}
+}
+
+func (r *objectResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	c := r.clientFor(resp)
+	if c == nil {
+		return
+	}
+	var m objectModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &m)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if m.Asset.IsNull() || m.Asset.ValueString() == "" {
+		resp.Diagnostics.Append(attrError("asset")...)
+		return
+	}
+	params := map[string]any{"asset": m.Asset.ValueString()}
+	if !m.X.IsNull() {
+		params["x"] = m.X.ValueFloat64()
+	}
+	if !m.Y.IsNull() {
+		params["y"] = m.Y.ValueFloat64()
+	}
+	if !m.Rotation.IsNull() {
+		params["rotation"] = m.Rotation.ValueFloat64()
+	}
+	if !m.Scale.IsNull() {
+		params["scale"] = m.Scale.ValueFloat64()
+	}
+	if !m.Sorting.IsNull() {
+		params["sorting"] = m.Sorting.ValueInt64()
+	}
+	if !m.Color.IsNull() && m.Color.ValueString() != "" {
+		params["color"] = m.Color.ValueString()
+	}
+	if !m.Z.IsNull() {
+		params["z"] = m.Z.ValueInt64()
+	}
+	id, diags := createNode(ctx, c, "place_object", params)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	m.ID = types.StringValue(id)
+	coerceUnknownToNull(&m)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+}
+
+func (r *objectResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var m objectModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if r.client == nil {
+		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
+		return
+	}
+	desc, exists, diags := fetchNode(ctx, r.client, m.ID.ValueString())
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !exists {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	// Objects expose position/rotation/scale/asset, so Read syncs the
+	// positional fields and surfaces hand-edits (moves/scales/rotations) as
+	// drift. z/sorting/color are not in the descriptor; they stay as config.
+	if pos, ok := desc["position"].([]any); ok && len(pos) == 2 {
+		m.X = types.Float64Value(numAsFloat(pos[0]))
+		m.Y = types.Float64Value(numAsFloat(pos[1]))
+	}
+	if desc["rotation"] != nil {
+		m.Rotation = types.Float64Value(numAsFloat(desc["rotation"]))
+	}
+	if desc["scale"] != nil {
+		m.Scale = types.Float64Value(numAsFloat(desc["scale"]))
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+}
+
+func (r *objectResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	if r.client == nil {
+		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
+		return
+	}
+	var plan objectModel
+	var state objectModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// Position updates move the node in place (move_element).
+	movedX := !plan.X.IsNull() && !state.X.IsNull() && plan.X != state.X
+	if movedX || (plan.X.IsNull() != state.X.IsNull()) {
+		x := plan.X.ValueFloat64()
+		y := state.Y.ValueFloat64()
+		if !plan.Y.IsNull() {
+			y = plan.Y.ValueFloat64()
+		}
+		resp.Diagnostics.Append(moveNode(ctx, r.client, state.ID.ValueString(), x, y)...)
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	movedY := !plan.Y.IsNull() && !state.Y.IsNull() && plan.Y != state.Y
+	if movedY && !movedX {
+		x := state.X.ValueFloat64()
+		if !plan.X.IsNull() {
+			x = plan.X.ValueFloat64()
+		}
+		y := plan.Y.ValueFloat64()
+		resp.Diagnostics.Append(moveNode(ctx, r.client, state.ID.ValueString(), x, y)...)
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	state.X = plan.X
+	state.Y = plan.Y
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+func (r *objectResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	if r.client == nil {
+		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
+		return
+	}
+	var m objectModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(deleteNode(ctx, r.client, m.ID.ValueString())...)
+}
+
+func (r *objectResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// ---- dungeondraft_light (add_light) ---------------------------------------
+
+type lightResource struct{ *nodeResourceBase }
+
+func NewLightResource() resource.Resource { return &lightResource{&nodeResourceBase{}} }
+
+func (r *lightResource) Metadata(_ context.Context, _ resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = typeName + "_light"
+}
+
+type lightModel struct {
+	ID      types.String  `tfsdk:"id"`
+	X       types.Float64 `tfsdk:"x"`
+	Y       types.Float64 `tfsdk:"y"`
+	Color   types.String  `tfsdk:"color"`
+	Energy  types.Float64 `tfsdk:"energy"`
+	Range   types.Float64 `tfsdk:"range"`
+	Shadows types.Bool    `tfsdk:"shadows"`
+	Asset   types.String  `tfsdk:"asset"`
+}
+
+func (r *lightResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "A light at a woxel position (add_light).",
+		Attributes: map[string]schema.Attribute{
+			"id":      idAttribute(),
+			"x":       schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
+			"y":       schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
+			"color":   schema.StringAttribute{Optional: true, Description: "#rrggbb"},
+			"energy":  schema.Float64Attribute{Optional: true},
+			"range":   schema.Float64Attribute{Optional: true, Description: "Radius scale."},
+			"shadows": schema.BoolAttribute{Optional: true},
+			"asset":   schema.StringAttribute{Optional: true, Computed: true, Description: "Lights gradient/cookie texture.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+		},
+	}
+}
+
+func (r *lightResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	c := r.clientFor(resp)
+	if c == nil {
+		return
+	}
+	var m lightModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &m)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// x and y default to map center when omitted; take them as required to be
+	// declarative (a light placement is part of the plan).
+	params := map[string]any{}
+	if !m.X.IsNull() {
+		params["x"] = m.X.ValueFloat64()
+	}
+	if !m.Y.IsNull() {
+		params["y"] = m.Y.ValueFloat64()
+	}
+	if m.X.IsNull() || m.Y.IsNull() {
+		resp.Diagnostics.Append(diagErrf("Missing coordinates", "dungeondraft_light requires both x and y")...)
+		return
+	}
+	if !m.Color.IsNull() && m.Color.ValueString() != "" {
+		params["color"] = m.Color.ValueString()
+	}
+	if !m.Energy.IsNull() {
+		params["energy"] = m.Energy.ValueFloat64()
+	}
+	if !m.Range.IsNull() {
+		params["range"] = m.Range.ValueFloat64()
+	}
+	if !m.Shadows.IsNull() {
+		params["shadows"] = m.Shadows.ValueBool()
+	}
+	if !m.Asset.IsNull() && m.Asset.ValueString() != "" {
+		params["asset"] = m.Asset.ValueString()
+	}
+	id, diags := createNode(ctx, c, "add_light", params)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	m.ID = types.StringValue(id)
+	coerceUnknownToNull(&m)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+}
+
+func (r *lightResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var m lightModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if r.client == nil {
+		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
+		return
+	}
+	desc, exists, diags := fetchNode(ctx, r.client, m.ID.ValueString())
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !exists {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	// Lights expose position/rotation/scale/asset; sync position + asset for
+	// drift detection. energy/range/shadows/color are not in the descriptor.
+	if pos, ok := desc["position"].([]any); ok && len(pos) == 2 {
+		m.X = types.Float64Value(numAsFloat(pos[0]))
+		m.Y = types.Float64Value(numAsFloat(pos[1]))
+	}
+	if a, ok := desc["asset"].(string); ok && a != "" {
+		m.Asset = types.StringValue(a)
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+}
+
+func (r *lightResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	noUpdate(ctx, req, resp)
+}
+
+func (r *lightResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	if r.client == nil {
+		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
+		return
+	}
+	var m lightModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(deleteNode(ctx, r.client, m.ID.ValueString())...)
+}
+
+func (r *lightResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
