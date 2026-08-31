@@ -1,13 +1,17 @@
-# MCP Bridge — Dungeondraft mod
+# MCP Bridge — Dungeondraft mod (agent mode)
 #
-# Opens a localhost TCP server inside Dungeondraft and speaks a tiny
-# newline-delimited JSON protocol (see PROTOCOL.md) so an external MCP server
-# can drive the currently-open map for AI-assisted map building.
+# The mod is now a thin, outbound *agent*: instead of hosting the localhost TCP
+# server inside Dungeondraft (which died silently whenever a handler crashed),
+# it dials the standalone Dungeondraft Bridge app (bridge_app) on
+# 127.0.0.1:8787, registers with an agent_hello frame, and answers the commands
+# the app forwards. The app answers user pings itself and reports dd_connected
+# from this agent's heartbeats, so a crashed mod leaves a clear
+# "dungeondraft offline" instead of a dead port. See bridge_app/.
 #
 # Engine: Dungeondraft runs Godot 3.4.2, so this uses the Godot 3 networking
-# class names (TCP_Server / StreamPeerTCP) and the connect(sig, self, "method")
-# signal form. Mod tool scripts receive a per-frame update(delta) callback but
-# NOT _process / _input, so all socket polling happens in update().
+# class (StreamPeerTCP client) and the connect(sig, self, "method") signal
+# form. Mod tool scripts receive a per-frame update(delta) callback but NOT
+# _process / _input, so all socket polling happens in update().
 #
 # Element model: every element this bridge touches is referenced by an integer
 # `id` == Dungeondraft's node_id (Global.World.AssignNodeID / GetNodeByID /
@@ -48,16 +52,28 @@ const COLLECTIONS := {
 	"texts": "Texts",
 }
 
-var _server : TCP_Server = null
-var _conns := []         # array of { "peer": StreamPeerTCP, "buf": String, "last": int }
-var _undo_stack := []    # bridge-managed undo ops (see _build_op / _apply_op)
+var _socket : StreamPeerTCP = null
+var _buf := ""
+var _connected := false          # stream status == CONNECTED
+var _helloed := false            # agent_hello sent on this connection
+var _backoff := 0                # frames until the next reconnect attempt
+var _hb_frames := 0              # frames since the LAST inbound traffic
+var _undo_stack := []            # bridge-managed undo ops (see _build_op / _apply_op)
 var _redo_stack := []
-var _frame := 0          # per-update-frame counter, used to reap idle connections
-# Backstop reap: a peer whose FIN Godot hasn't surfaced yet is dropped after
-# this long. Deliberately ~60s — far past the MCP client's own idle_timeout
-# (10s), so it never cuts a connection a live client is holding (that's what
-# makes disconnect_from_host() abort/RST the socket).
-const IDLE_REAP_FRAMES := 3600  # ~60s at 60fps
+var _frame := 0                  # per-update-frame counter
+
+# Reconnect backoff in frames; rewritten connections start retrying quickly,
+# then double up to a ~15s cap so a dead app isn't hammered.
+const RECONNECT_BASE := 20
+const RECONNECT_MAX := 900
+# Heartbeat cadence: ping the app every ~5s so it can report dd_connected.
+const HEARTBEAT_FRAMES := 300
+# If the app sends us NOTHING for 3 heartbeats (~15s) the socket is dead (the
+# app answers each ping, so silence means it is gone); force a reconnect than
+# wait for the OS to notice.
+const DEAD_AFTER_FRAMES := HEARTBEAT_FRAMES * 3
+const AGENT_NAME := "mcp_bridge_mod"
+var _label : Label = null        # tool-panel label, refreshed with live status
 
 
 # ---------------------------------------------------------------------------
@@ -66,92 +82,129 @@ const IDLE_REAP_FRAMES := 3600  # ~60s at 60fps
 
 func start():
 	_register_tool()
-	_server = TCP_Server.new()
-	var err = _server.listen(PORT, HOST)
-	if err == OK:
-		print("[mcp-bridge] listening on %s:%d (protocol v%d)" % [HOST, PORT, PROTOCOL_VERSION])
-	else:
-		_server = null
-		print("[mcp-bridge] FAILED to listen on %s:%d (error %d)" % [HOST, PORT, err])
-		OS.alert("MCP bridge could not open port %d (error %d).\nIs it already in use?" % [PORT, err], "MCP Bridge")
+	_connect_socket()
+	print("[mcp-bridge] agent mode: bridging to tcp://%s:%d (protocol v%d)" % [HOST, PORT, PROTOCOL_VERSION])
 
 
 func update(delta : float):
-	if _server == null:
-		return
 	_frame += 1
+	if _socket == null:
+		# Between attempts (start / after a loss): wait out the backoff.
+		if _backoff > 0:
+			_backoff -= 1
+			if _backoff == 0:
+				_connect_socket()
+		_refresh_status_label()
+		return
 
-	while _server.is_connection_available():
-		var peer = _server.take_connection()
-		peer.set_no_delay(true)
-		_conns.append({ "peer": peer, "buf": "", "last": _frame })
-
-	# Walk the current connections. The MCP client (bridge_client.py) keeps ONE
-	# persistent connection and reaps it itself once idle (default 10s), so we
-	# must NOT race its clock with a short reap of our own — cutting a live-but-
-	# idle peer makes Godot 3.4's disconnect_from_host() abort the connection
-	# (RST, which the client reports as WinError 10053). We only drop peers when
-	# poll() shows the remote is gone, with the long backstop above for FINs
-	# Godot hasn't surfaced. Every drop drains queued bytes first, since
-	# disconnecting with unread data is what actually triggers the RST.
-	var survivors := []
-	for c in _conns:
-		var peer : StreamPeerTCP = c["peer"]
-		peer.poll()   # refresh status each frame so a disconnect is noticed
-		if peer.get_status() != StreamPeerTCP.STATUS_CONNECTED:
-			_drop_peer(peer)
-			continue
-		var avail = peer.get_available_bytes()
-		if avail > 0:
-			var res = peer.get_data(avail)   # [err, PoolByteArray]
-			if res[0] == OK:
-				c["buf"] += res[1].get_string_from_utf8()
-				c["last"] = _frame
-		var handled := false
-		var nl = c["buf"].find("\n")
-		while nl != -1:
-			var line = c["buf"].substr(0, nl).strip_edges()
-			c["buf"] = c["buf"].substr(nl + 1)
-			if line != "":
-				_handle_line(peer, line)
-				handled = true
-			nl = c["buf"].find("\n")
-		# Backstop: by 60s idle any client has reaped its socket itself, so a
-		# drop here can only free a zombie DD never saw close.
-		if _frame - int(c["last"]) > IDLE_REAP_FRAMES:
-			_drop_peer(peer)
-			continue
-		survivors.append(c)
-	_conns = survivors
+	_socket.poll()
+	var st = _socket.get_status()
+	if st == StreamPeerTCP.STATUS_CONNECTED:
+		if not _connected:
+			_connected = true
+			_helloed = false
+			_hb_frames = 0
+			print("[mcp-bridge] connected to bridge app at %s:%d" % [HOST, PORT])
+		if not _helloed:
+			_send({ "agent_hello": { "name": AGENT_NAME, "protocol": PROTOCOL_VERSION }})
+			_helloed = true   # the app registers on receipt; its ack is consumed
+		if _hb_frames >= HEARTBEAT_FRAMES:
+			_send({ "cmd": "ping" })
+			# A stable stretch earns a faster retry if this connection dies.
+			if _backoff > RECONNECT_BASE:
+				_backoff = max(RECONNECT_BASE, _backoff / 2)
+		if _hb_frames > DEAD_AFTER_FRAMES:
+			_teardown_socket("no app traffic for %ds" % int(DEAD_AFTER_FRAMES / 60))
+			return
+		_hb_frames += 1
+		_read_buffered()
+	elif st == StreamPeerTCP.STATUS_CONNECTING or st == StreamPeerTCP.STATUS_NONE:
+		pass  # still dialing; nothing to do this frame
+	else:
+		_teardown_socket("connection error (status %d)" % st)
+	_refresh_status_label()
 
 
-# Drop a peer's socket. Drains whatever's buffered before disconnecting:
-# Godot 3.4's StreamPeerTCP.disconnect_from_host() sends an RST (aborts the
-# connection) if there are still unread incoming bytes, which the MCP client
-# surfaces as a WinError 10053 it can't always attribute to a dead bridge.
-func _drop_peer(peer : StreamPeerTCP):
-	var avail = peer.get_available_bytes()
-	while avail > 0:
-		var res = peer.get_data(avail)
-		if res[0] != OK:
-			break
-		avail = peer.get_available_bytes()
-	peer.disconnect_from_host()
+# Drain app traffic and answer forwarded user commands. Any received frame
+# proves the app is alive, so this also resets the heartbeat clock.
+func _read_buffered():
+	var avail = _socket.get_available_bytes()
+	if avail > 0:
+		var res = _socket.get_data(avail)
+		if res[0] == OK:
+			_buf += res[1].get_string_from_utf8()
+			_hb_frames = 0
+	var nl = _buf.find("\n")
+	while nl != -1:
+		var line = _buf.substr(0, nl).strip_edges()
+		_buf = _buf.substr(nl + 1)
+		if line != "":
+			_handle_request(line)
+		nl = _buf.find("\n")
+
+
+# Write a request/response frame to the app. Never raises.
+func _send(obj):
+	if _socket == null or _socket.get_status() != StreamPeerTCP.STATUS_CONNECTED:
+		return
+	_socket.put_data((JSON.print(obj) + "\n").to_utf8())
+
+
+func _connect_socket():
+	_socket = StreamPeerTCP.new()
+	var err = _socket.connect_to_host(HOST, PORT)
+	if err != OK:
+		_socket = null
+		_backoff = RECONNECT_BASE
+		print("[mcp-bridge] connect_to_host error %d; retrying soon" % err)
+		return
+	_socket.set_no_delay(true)
+	_backoff = RECONNECT_BASE
+
+
+func _teardown_socket(reason : String):
+	print("[mcp-bridge] %s — reconnecting in a bit" % reason)
+	_buf = ""
+	_connected = false
+	_helloed = false
+	_hb_frames = 0
+	if _socket != null:
+		_socket.disconnect_from_host()
+		_socket = null
+	_backoff = _backoff * 2
+	if _backoff < RECONNECT_BASE or _backoff > RECONNECT_MAX:
+		_backoff = RECONNECT_BASE if _backoff <= 0 else RECONNECT_MAX
 
 
 # ---------------------------------------------------------------------------
 # Request handling
 # ---------------------------------------------------------------------------
 
-func _handle_line(peer : StreamPeerTCP, line : String):
+func _handle_request(line : String):
 	var parsed = JSON.parse(line)
 	var req = parsed.result
-	var resp : Dictionary
 	if parsed.error != OK or typeof(req) != TYPE_DICTIONARY:
-		resp = _err("invalid JSON request")
+		return   # malformed app frame — ignore, never let it crash the mod
+	# Agent-side: a frame with no "cmd" is a reply to OUR agent_hello or
+	# heartbeat ping, not a user command — consume it silently.
+	if not req.has("cmd"):
+		return
+	var resp = _record_and_dispatch(req)
+	_send(resp)
+
+
+# Refresh the tool-panel status line. Never raises on a missing label.
+func _refresh_status_label():
+	if _label == null or not is_instance_valid(_label):
+		return
+	var text : String = ""
+	if _socket == null:
+		text = "disconnected — retry in %ds" % int(ceil(float(_backoff) / 60.0))
+	elif not _connected:
+		text = "connecting to %s:%d..." % [HOST, PORT]
 	else:
-		resp = _record_and_dispatch(req)
-	peer.put_data((JSON.print(resp) + "\n").to_utf8())
+		text = "connected to bridge app (v%d)" % PROTOCOL_VERSION
+	_label.set_text(text)
 
 
 # Runs a command and, if it succeeded and is a reversible map edit, pushes an op
@@ -1538,7 +1591,7 @@ func _duplicate_object(req : Dictionary) -> Dictionary:
 		prop.z_as_relative = false
 		prop.z_index = int(src.get("z_index"))
 	else:
-prop.z_as_relative = false
+		prop.z_as_relative = false
 		prop.z_index = _i(req.get("z", 200), 200)
 	return _ok({ "id": _id(prop), "position": _vec(prop.position) })
 
@@ -2010,8 +2063,11 @@ func _err(msg) -> Dictionary:
 func _register_tool():
 	var icon = _ensure_icon()
 	var panel = Global.Editor.Toolset.CreateModTool(self, "Settings", "mcp_bridge", "MCP Bridge", icon)
-	panel.CreateLabel("Listening on")
-	panel.CreateLabel("%s:%d" % [HOST, PORT])
+	panel.CreateLabel("Bridge agent")
+	panel.CreateLabel("app %s:%d (protocol v%d)" % [HOST, PORT, PROTOCOL_VERSION])
+	var lbl = panel.CreateLabel("connecting...")
+	if lbl != null and lbl is Label:
+		_label = lbl
 
 
 func _ensure_icon() -> String:
