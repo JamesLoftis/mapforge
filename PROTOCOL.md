@@ -2,14 +2,48 @@
 
 A deliberately tiny protocol so both halves stay trivial to extend.
 
-- **Transport:** TCP on `127.0.0.1:8787` (override the mod's `PORT` const and the
-  server's `DD_BRIDGE_PORT` env var together).
+- **Transport:** TCP on `127.0.0.1:8787` (override the app's `-addr` flag and the
+  server's `DD_BRIDGE_PORT` env var together). The port is owned by the
+  **Dungeondraft Bridge app** (`bridge_app/`), a standalone process — not by the
+  mod. The mod dials the app as an **agent**; clients only ever talk to the app.
 - **Framing:** one JSON object per line, terminated by `\n`, UTF-8.
 - **Model:** request/response, one request at a time over a **single persistent
-  connection**. The MCP server keeps the socket alive itself: a background
-  watchdog pings the mod every few seconds while idle and reconnects the moment
-  the link breaks, and transport failures are retried on a fresh connection
-  before any error reaches the caller.
+  connection**. The MCP server keeps its socket alive itself: a background
+  watchdog pings every few seconds while idle and reconnects the moment the link
+  breaks, and transport failures are retried on a fresh connection before any
+  error reaches the caller. The app answers `ping` itself and reports whether
+  Dungeondraft is actually reachable, so liveness never depends on the mod.
+
+## Roles and connection setup
+
+Three kinds of socket call the port home — the app tells them apart by their
+first frame:
+
+- **agent** — the Dungeondraft mod (`mcp_bridge.gd`). Its first frame is a
+  registration; it then answers commands the app forwards, and heartbeats
+  (`{"cmd":"ping"}`) every ~5s so the app can report `dd_connected`.
+  Only one agent may be connected; a new `agent_hello` supersedes the old socket.
+
+  ```json
+  { "agent_hello": { "name": "mcp_bridge_mod", "protocol": 17 } }
+  ```
+
+  → `{ "ok": true, "result": { "agent": "registered", "protocol": 17 } }`
+
+  The agent **never replies to** `ping` — a `{"cmd":"ping"}` sent from the agent
+  side is a heartbeat, answered by the app and consumed by the agent.
+
+- **user** — the MCP server / provider / any client. Sends normal command
+  frames (see below). This is the only role with a meaningful `ok`/`result`.
+
+With no agent connected, every *user* command except `ping` is answered with:
+
+```json
+{ "ok": false, "error": "dungeondraft offline: bridge agent not connected" }
+```
+
+A plain structured reason — not a dead port — so a crashed/absent mod is
+diagnosable at a glance (see `bridge_app/` for the health page and `/health`).
 
 ## Request
 
@@ -45,7 +79,7 @@ Coordinates are **woxel** (world pixel) space; map center is in
 
 | cmd | params | result |
 | --- | --- | --- |
-| `ping` | — | `{ pong, protocol, engine }` |
+| `ping` | — | `{ pong, protocol, app, dd_connected }` — answered by the app itself; `dd_connected` false when no agent is linked |
 | `get_status` | — | `{ map_open, level_id, level_count, map_size_woxels, map_center, counts{}, active_tool }` |
 | `list_asset_categories` | — | `{ categories[] }` |
 | `list_assets` | `category="Objects"`, `search=""`, `limit=100` | `{ category, total, matched, returned, assets[] }` |
@@ -195,10 +229,15 @@ Ctrl+Z in Dungeondraft.
 
 ## Implementation notes
 
-- **Transport** — the mod opens a `TCP_Server` inside Dungeondraft; the modding
-  sandbox on Godot 3.4.2 permits it. If a future DD/Godot version locks this
-  down, the fallback is a file-watch transport: the mod polls a request file via
-  `File` in `update()` and writes a response file.
+- **Transport / roles** — the wire port `tcp://127.0.0.1:8787` is owned by the
+  standalone **bridge app** (`bridge_app/`, Go). The Dungeondraft mod is an
+  outbound **agent**: it dials the app, sends `{"agent_hello":...}`, and answers
+  the user commands the app forwards; it heartbeats (`{"cmd":"ping"}`) every ~5s
+  and reconnects with backoff if the link drops. The app answers user `ping`s
+  locally and replies `"dungeondraft offline: bridge agent not connected"` to any
+  other user command while no agent is linked, so a crashed mod shows up as a
+  structured error (and on `http://127.0.0.1:8788/health`) instead of a dead port.
+  Element handlers still run inside Dungeondraft, so nothing below is affected.
 - **Element ids** — every element is referenced by `node_id`, force-assigned via
   `Global.World.AssignNodeID(node)` on create/list so it resolves immediately
   with `GetNodeByID` / `DeleteNodeByID`.

@@ -1,12 +1,8 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.eggs/
-build/
-dist/
+# Go build artifacts
+*.exe
+
+# Leftover Python venv (server/ was retired; harmless if it still exists locally)
 .venv/
-venv/
 
 # Runtime-generated mod icon
-mod/dungeondraft-mcp-bridge/icons/mcp_bridge.png
+mod/dungeondraft-mcp-bridge-agent/icons/mcp_bridge.png
