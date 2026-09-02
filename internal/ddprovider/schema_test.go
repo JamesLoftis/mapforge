@@ -25,6 +25,7 @@ var resourcesUnderTest = []struct {
 	{"dungeondraft_path", NewPathResource},
 	{"dungeondraft_terrain_fill", NewTerrainFillResource},
 	{"dungeondraft_room", NewRoomResource},
+	{"dungeondraft_level", NewLevelResource},
 }
 
 // dataSourcesUnderTest mirrors provider.DataSources().

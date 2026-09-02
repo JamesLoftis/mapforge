@@ -30,6 +30,7 @@ type roofModel struct {
 	Width   types.Float64 `tfsdk:"width"`
 	Type    types.Int64   `tfsdk:"type"`
 	Sorting types.Int64   `tfsdk:"sorting"`
+	LevelID types.String  `tfsdk:"level_id"`
 }
 
 func (r *roofResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -48,7 +49,8 @@ func (r *roofResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
 			"type": schema.Int64Attribute{Optional: true, Computed: true,
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
-			"sorting": schema.Int64Attribute{Optional: true, Description: "0=over, 1=under.", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"sorting":  schema.Int64Attribute{Optional: true, Description: "0=over, 1=under.", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"level_id": levelIDAttribute(),
 		},
 	}
 }
@@ -83,7 +85,7 @@ func (r *roofResource) Create(ctx context.Context, req resource.CreateRequest, r
 	if !m.Sorting.IsNull() {
 		params["sorting"] = m.Sorting.ValueInt64()
 	}
-	id, diags := createNode(ctx, c, "add_roof", params)
+	id, diags := createNode(ctx, c, "add_roof", params, m.LevelID.ValueString())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -150,13 +152,14 @@ func (r *textResource) Metadata(_ context.Context, _ resource.MetadataRequest, r
 }
 
 type textModel struct {
-	ID    types.String  `tfsdk:"id"`
-	Text  types.String  `tfsdk:"text"`
-	X     types.Float64 `tfsdk:"x"`
-	Y     types.Float64 `tfsdk:"y"`
-	Size  types.Int64   `tfsdk:"size"`
-	Color types.String  `tfsdk:"color"`
-	Font  types.String  `tfsdk:"font"`
+	ID      types.String  `tfsdk:"id"`
+	Text    types.String  `tfsdk:"text"`
+	X       types.Float64 `tfsdk:"x"`
+	Y       types.Float64 `tfsdk:"y"`
+	Size    types.Int64   `tfsdk:"size"`
+	Color   types.String  `tfsdk:"color"`
+	Font    types.String  `tfsdk:"font"`
+	LevelID types.String  `tfsdk:"level_id"`
 }
 
 func (r *textResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -167,12 +170,13 @@ func (r *textResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			// text/size/color/font have no bridge update path, so a change
 			// replaces; x/y do not (Update calls move_element) and are left
 			// without RequiresReplace.
-			"text":  schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
-			"x":     schema.Float64Attribute{Required: true},
-			"y":     schema.Float64Attribute{Required: true},
-			"size":  schema.Int64Attribute{Optional: true, Computed: true, Description: "Font size in points.", PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
-			"color": schema.StringAttribute{Optional: true, Computed: true, Description: "#rrggbb", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
-			"font":  schema.StringAttribute{Optional: true, Computed: true, Description: "A DD font name.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
+			"text":     schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"x":        schema.Float64Attribute{Required: true},
+			"y":        schema.Float64Attribute{Required: true},
+			"size":     schema.Int64Attribute{Optional: true, Computed: true, Description: "Font size in points.", PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
+			"color":    schema.StringAttribute{Optional: true, Computed: true, Description: "#rrggbb", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
+			"font":     schema.StringAttribute{Optional: true, Computed: true, Description: "A DD font name.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
+			"level_id": levelIDAttribute(),
 		},
 	}
 }
@@ -197,7 +201,7 @@ func (r *textResource) Create(ctx context.Context, req resource.CreateRequest, r
 	if !m.Font.IsNull() && m.Font.ValueString() != "" {
 		params["font"] = m.Font.ValueString()
 	}
-	id, diags := createNode(ctx, c, "add_text", params)
+	id, diags := createNode(ctx, c, "add_text", params, m.LevelID.ValueString())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -300,6 +304,7 @@ type patternModel struct {
 	Color    types.String  `tfsdk:"color"`
 	Rotation types.Float64 `tfsdk:"rotation"`
 	Z        types.Int64   `tfsdk:"z"`
+	LevelID  types.String  `tfsdk:"level_id"`
 }
 
 func (r *patternResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -321,6 +326,7 @@ func (r *patternResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
 			"z": schema.Int64Attribute{Optional: true, Description: "Absolute z_index (default -100).",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"level_id": levelIDAttribute(),
 		},
 	}
 }
@@ -372,7 +378,7 @@ func (r *patternResource) Create(ctx context.Context, req resource.CreateRequest
 	if !m.Z.IsNull() {
 		params["z"] = m.Z.ValueInt64()
 	}
-	id, diags := createNode(ctx, c, "place_pattern", params)
+	id, diags := createNode(ctx, c, "place_pattern", params, m.LevelID.ValueString())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -444,6 +450,7 @@ type pathModel struct {
 	Width      types.Float64 `tfsdk:"width"`
 	Layer      types.Int64   `tfsdk:"layer"`
 	Sorting    types.Int64   `tfsdk:"sorting"`
+	LevelID    types.String  `tfsdk:"level_id"`
 }
 
 func (r *pathResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -457,9 +464,10 @@ func (r *pathResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()}},
 			"smoothness": schema.Float64Attribute{Optional: true, Computed: true, Description: "Curve smoothing.",
 				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
-			"width":   schema.Float64Attribute{Optional: true, Description: "Width scale multiplier.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
-			"layer":   schema.Int64Attribute{Optional: true, PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
-			"sorting": schema.Int64Attribute{Optional: true, PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"width":    schema.Float64Attribute{Optional: true, Description: "Width scale multiplier.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"layer":    schema.Int64Attribute{Optional: true, PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"sorting":  schema.Int64Attribute{Optional: true, PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"level_id": levelIDAttribute(),
 		},
 	}
 }
@@ -497,7 +505,7 @@ func (r *pathResource) Create(ctx context.Context, req resource.CreateRequest, r
 	if !m.Sorting.IsNull() {
 		params["sorting"] = m.Sorting.ValueInt64()
 	}
-	id, diags := createNode(ctx, c, "draw_path", params)
+	id, diags := createNode(ctx, c, "draw_path", params, m.LevelID.ValueString())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return

@@ -25,12 +25,13 @@ func (r *terrainFillResource) Metadata(_ context.Context, _ resource.MetadataReq
 }
 
 type terrainFillModel struct {
-	ID     types.String  `tfsdk:"id"`
-	Slot   types.Int64   `tfsdk:"slot"`
-	Asset  types.String  `tfsdk:"asset"`
-	Rect   types.List    `tfsdk:"rect"`
-	Points types.List    `tfsdk:"points"`
-	Rate   types.Float64 `tfsdk:"rate"`
+	ID      types.String  `tfsdk:"id"`
+	Slot    types.Int64   `tfsdk:"slot"`
+	Asset   types.String  `tfsdk:"asset"`
+	Rect    types.List    `tfsdk:"rect"`
+	Points  types.List    `tfsdk:"points"`
+	Rate    types.Float64 `tfsdk:"rate"`
+	LevelID types.String  `tfsdk:"level_id"`
 }
 
 func (r *terrainFillResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -43,6 +44,14 @@ func (r *terrainFillResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"rect":   schema.ListAttribute{Optional: true, ElementType: types.Int64Type, Description: "[x, y, w, h] region to fill; omit for whole level."},
 			"points": schema.ListAttribute{Optional: true, ElementType: pointElemType, Description: "[[x,y], ...] polygon region to fill; alternative to rect."},
 			"rate":   schema.Float64Attribute{Optional: true, Description: "Paint strength 0..1 (default 1)."},
+			// Not RequiresReplace, matching every other field here: a
+			// level_id change just re-applies apply() like any other change
+			// (paints the new level; the old level's paint is not undone,
+			// same as every other terrain_fill re-application).
+			"level_id": schema.StringAttribute{
+				Optional:    true,
+				Description: "A dungeondraft_level id to paint on. Omit to use whatever level is currently active.",
+			},
 		},
 	}
 }
@@ -86,7 +95,10 @@ func (r *terrainFillResource) apply(ctx context.Context, m *terrainFillModel) (s
 			return zero, diagErrf("rate ignored", "rate only applies to region fills (whole-level fill is full-strength).")
 		}
 	}
-	if _, err := r.client.Request(ctx, cmd, params); err != nil {
+	_, err := r.client.RunOnLevel(ctx, m.LevelID.ValueString(), func() (map[string]any, error) {
+		return r.client.Request(ctx, cmd, params)
+	})
+	if err != nil {
 		return zero, diagErrf("Failed to run "+cmd, "%v", err)
 	}
 	// Deterministic id so repeated applies (and quantity changes) are stable.

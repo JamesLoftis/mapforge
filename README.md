@@ -153,6 +153,7 @@ work, rather than chaining a big apply straight into an autosave/close.
 | `dungeondraft_path` | `draw_path` | — | replaces |
 | `dungeondraft_terrain_fill` | `fill_terrain`/`fill_region` | re-paints in place on any change | — |
 | `dungeondraft_room` | `build_room` | — | replaces (compound create — a wall loop + floor in one call, no reshape API) |
+| `dungeondraft_level` | `add_level` | — | replaces, but see the level-targeting section below — this one can't really be deleted either |
 
 "Replaces" means every attribute in that resource carries `RequiresReplace`:
 the bridge has no update command for it, so a config change destroys and
@@ -170,6 +171,47 @@ bridge side). `dungeondraft_terrain_fill` cannot un-paint; its Delete warns.
 the wall and the floor pattern shape when `floor = "pattern"` produced one —
 a terrain floor has the same can't-un-paint limitation as
 `dungeondraft_terrain_fill`, and Delete warns instead.
+
+## Levels
+
+Every creator resource (everything in the table above except
+`dungeondraft_level` itself) accepts an optional `level_id` attribute:
+
+```hcl
+resource "dungeondraft_level" "upper" {
+  label = "Upper Floor"
+}
+
+resource "dungeondraft_object" "torch" {
+  asset    = "res://.../torch.png"
+  x        = 1024
+  y        = 1024
+  level_id = dungeondraft_level.upper.id  # otherwise lands on whatever level is currently active
+}
+```
+
+Two things make this more than "just another param":
+
+- The bridge only has `set_level` (switch which level is *currently active*)
+  — every creator command implicitly targets whatever that is, and there's
+  no way to pass a level directly to `place_object` etc. So `level_id`
+  works by having the provider call `set_level` immediately before the
+  create, under a mutex that serializes the whole
+  resolve-index → switch → create sequence (`bridge.Client.RunOnLevel`) —
+  otherwise two resources targeting different levels, created concurrently
+  (Terraform's default `-parallelism` is 10), could interleave their
+  `set_level` calls and land an element on the wrong level. Resources
+  without `level_id` set are unaffected by any of this — they behave
+  exactly as before.
+- **`dungeondraft_level` has no delete or rename counterpart in the bridge
+  protocol at all** — `add_level`/`set_level`/`list_levels` is the entire
+  level write surface. `Delete` only warns; a `label` change replaces
+  (destroys, in Terraform's model) but the old level is never actually
+  removed from the map, just orphaned. Treat this resource as effectively
+  append-only.
+
+See `examples/level/` for a worked plan (**do not run it against a real
+map** — for the reason above, it's a one-way door).
 
 ## Data sources
 
