@@ -96,7 +96,7 @@ func (d *assetsDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 		return
 	}
 
-	var paths []string
+	paths := []string{}
 	if raw, ok := result["assets"].([]any); ok {
 		for _, a := range raw {
 			if s, ok := a.(string); ok {

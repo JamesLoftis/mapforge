@@ -112,17 +112,27 @@ func moveNode(ctx context.Context, c *bridge.Client, idStr string, x, y float64)
 	return nil
 }
 
-// gotoImport runs get_element for `raw` (an id) so `terraform import` can
-// attach existing map elements to resources.
-func gotoImport(ctx context.Context, c *bridge.Client, raw any) (types.String, diag.Diagnostics) {
-	switch v := raw.(type) {
-	case string:
-	case float64:
-		return types.StringValue(strconv.FormatInt(int64(v), 10)), nil
-	case int64:
-		return types.StringValue(strconv.FormatInt(v, 10)), nil
+// modifyObjectNode calls modify_object for the fields it actually supports in
+// place (scale, rotation, color) — the only dungeondraft_object attributes
+// besides x/y the bridge can change without a destroy+recreate. A nil pointer
+// means "this field didn't change in the plan," and is omitted so the bridge
+// leaves it alone rather than resetting it.
+func modifyObjectNode(ctx context.Context, c *bridge.Client, idStr string, scale, rotation *float64, color *string) diag.Diagnostics {
+	id, _ := strconv.ParseInt(idStr, 10, 64)
+	params := map[string]any{"id": id}
+	if scale != nil {
+		params["scale"] = *scale
 	}
-	return types.StringNull(), diagErrf("Import failure", "import id must be a node id, got %v", raw)
+	if rotation != nil {
+		params["rotation"] = *rotation
+	}
+	if color != nil {
+		params["color"] = *color
+	}
+	if _, err := c.Request(ctx, "modify_object", params); err != nil {
+		return diagErrf("Failed to modify element %s", "%v", err)
+	}
+	return nil
 }
 
 // diagErrf builds an error diagnostic from a format string.

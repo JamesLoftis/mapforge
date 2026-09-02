@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -89,20 +90,27 @@ type wallModel struct {
 
 func (r *wallResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Draw a wall through woxel points (draw_wall). Shape fields replace; the bridge has no reshape API yet.",
+		Description: "Draw a wall through woxel points (draw_wall). The bridge has no reshape/redraw API — every attribute replaces on change; Update is never actually called.",
 		Attributes: map[string]schema.Attribute{
-			"id":     idAttribute(),
-			"points": schema.ListAttribute{Required: true, ElementType: pointElemType, Description: "Polyline in woxels."},
+			"id": idAttribute(),
+			"points": schema.ListAttribute{Required: true, ElementType: pointElemType, Description: "Polyline in woxels.",
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()}},
 			// Read syncs asset/loop/type/joint from the live wall (A2 geometry
 			// read), so these must be Optional+Computed: a value the bridge
 			// applied by default (config left it unset) is not drift, only a
-			// mismatch against an explicitly-set config value is.
-			"asset":  schema.StringAttribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
-			"loop":   schema.BoolAttribute{Optional: true, Computed: true, Description: "Close into a loop (a room).", PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()}},
-			"type":   schema.Int64Attribute{Optional: true, Computed: true, Description: "0=auto, 1=manual, 2=cave.", PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()}},
-			"joint":  schema.Int64Attribute{Optional: true, Computed: true, Description: "0=sharp, 1=bevel, 2=round.", PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()}},
-			"color":  schema.StringAttribute{Optional: true},
-			"shadow": schema.BoolAttribute{Optional: true},
+			// mismatch against an explicitly-set config value is. RequiresReplace
+			// still applies on top — there is no draw_wall equivalent of
+			// modify_object, so an explicit change can only be a replace.
+			"asset": schema.StringAttribute{Optional: true, Computed: true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
+			"loop": schema.BoolAttribute{Optional: true, Computed: true, Description: "Close into a loop (a room).",
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown(), boolplanmodifier.RequiresReplace()}},
+			"type": schema.Int64Attribute{Optional: true, Computed: true, Description: "0=auto, 1=manual, 2=cave.",
+				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
+			"joint": schema.Int64Attribute{Optional: true, Computed: true, Description: "0=sharp, 1=bevel, 2=round.",
+				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
+			"color":  schema.StringAttribute{Optional: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"shadow": schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
 		},
 	}
 }
@@ -239,22 +247,30 @@ type portalModel struct {
 
 func (r *portalResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A door/window portal (add_portal). Give wall_id to mount on a specific wall deterministically; omit it to snap to the nearest wall.",
+		Description: "A door/window portal (add_portal). Give wall_id to mount on a specific wall deterministically; omit it to snap to the nearest wall. No modify-portal API exists — every attribute replaces on change.",
 		Attributes: map[string]schema.Attribute{
-			"id":    idAttribute(),
-			"asset": schema.StringAttribute{Required: true, Description: "A Portals asset path."},
+			"id": idAttribute(),
+			"asset": schema.StringAttribute{Required: true, Description: "A Portals asset path.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			// Read syncs wall_id/closed/radius/x/y from the live portal, so
 			// these must be Optional+Computed — see the wall schema's comment.
-			"x":             schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
-			"y":             schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
-			"wall_id":       schema.Int64Attribute{Optional: true, Computed: true, Description: "Mount on this specific wall (skips nearest-wall search). Links to a dungeondraft_wall.", PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()}},
-			"radius":        schema.Float64Attribute{Optional: true, Computed: true, Description: "Door half-width (~128 = 1-tile door).", PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
-			"closed":        schema.BoolAttribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()}},
-			"flip":          schema.BoolAttribute{Optional: true},
-			"mount":         schema.StringAttribute{Optional: true, Description: "wall or free."},
-			"snap_max":      schema.Float64Attribute{Optional: true, Description: "Max woxel distance a wall may be and still capture the portal."},
-			"rotation":      schema.Float64Attribute{Optional: true, Description: "Degrees; freestanding only."},
-			"fallback_free": schema.BoolAttribute{Optional: true},
+			// RequiresReplace still applies: there is no move/remount API for
+			// a portal, unlike a plain object.
+			"x": schema.Float64Attribute{Optional: true, Computed: true,
+				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
+			"y": schema.Float64Attribute{Optional: true, Computed: true,
+				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
+			"wall_id": schema.Int64Attribute{Optional: true, Computed: true, Description: "Mount on this specific wall (skips nearest-wall search). Links to a dungeondraft_wall.",
+				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
+			"radius": schema.Float64Attribute{Optional: true, Computed: true, Description: "Door half-width (~128 = 1-tile door).",
+				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
+			"closed": schema.BoolAttribute{Optional: true, Computed: true,
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown(), boolplanmodifier.RequiresReplace()}},
+			"flip":          schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
+			"mount":         schema.StringAttribute{Optional: true, Description: "wall or free.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"snap_max":      schema.Float64Attribute{Optional: true, Description: "Max woxel distance a wall may be and still capture the portal.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"rotation":      schema.Float64Attribute{Optional: true, Description: "Degrees; freestanding only.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"fallback_free": schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
 		},
 	}
 }
@@ -399,20 +415,27 @@ type objectModel struct {
 
 func (r *objectResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A prop on the map (place_object). x/y update in place via move_element; the rest replace.",
+		Description: "A prop on the map (place_object). x/y/rotation/scale/color update in place (move_element, modify_object); asset/sorting/z have no update API and replace.",
 		Attributes: map[string]schema.Attribute{
-			"id":    idAttribute(),
-			"asset": schema.StringAttribute{Required: true, Description: "An Objects asset path."},
+			"id": idAttribute(),
+			"asset": schema.StringAttribute{Required: true, Description: "An Objects asset path.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			// Read syncs position/rotation/scale from the live object, so these
 			// must be Optional+Computed (values DD applied by default are not
 			// drift, only a mismatch against an explicitly-set config value is).
+			// No RequiresReplace here: Update actually calls move_element /
+			// modify_object for these.
 			"x":        schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
 			"y":        schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
 			"rotation": schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
 			"scale":    schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
-			"sorting":  schema.Int64Attribute{Optional: true, Description: "0=over, 1=under."},
-			"color":    schema.StringAttribute{Optional: true},
-			"z":        schema.Int64Attribute{Optional: true, Description: "Absolute z_index (default 200; above legacy floors, below roofs)."},
+			// color isn't in get_element's object descriptor at all, so it can't
+			// be Computed/drift-checked — but modify_object does accept it, so
+			// Update still applies an explicit change in place (write-only,
+			// like sorting/z, just not replace-on-change like them).
+			"color":   schema.StringAttribute{Optional: true},
+			"sorting": schema.Int64Attribute{Optional: true, Description: "0=over, 1=under.", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"z":       schema.Int64Attribute{Optional: true, Description: "Absolute z_index (default 200; above legacy floors, below roofs).", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
 		},
 	}
 }
@@ -535,8 +558,36 @@ func (r *objectResource) Update(ctx context.Context, req resource.UpdateRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	// scale/rotation/color update in place via modify_object — only the
+	// fields that actually changed, so an unrelated field isn't clobbered
+	// back to a bridge default.
+	var scale, rotation *float64
+	var color *string
+	if !plan.Scale.Equal(state.Scale) {
+		v := plan.Scale.ValueFloat64()
+		scale = &v
+	}
+	if !plan.Rotation.Equal(state.Rotation) {
+		v := plan.Rotation.ValueFloat64()
+		rotation = &v
+	}
+	if !plan.Color.Equal(state.Color) && !plan.Color.IsNull() {
+		v := plan.Color.ValueString()
+		color = &v
+	}
+	if scale != nil || rotation != nil || color != nil {
+		resp.Diagnostics.Append(modifyObjectNode(ctx, r.client, state.ID.ValueString(), scale, rotation, color)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
 	state.X = plan.X
 	state.Y = plan.Y
+	state.Rotation = plan.Rotation
+	state.Scale = plan.Scale
+	state.Color = plan.Color
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -580,16 +631,19 @@ type lightModel struct {
 
 func (r *lightResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A light at a woxel position (add_light).",
+		Description: "A light at a woxel position (add_light). No modify-light API exists (unlike dungeondraft_object) — every attribute replaces on change.",
 		Attributes: map[string]schema.Attribute{
-			"id":      idAttribute(),
-			"x":       schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
-			"y":       schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
-			"color":   schema.StringAttribute{Optional: true, Description: "#rrggbb"},
-			"energy":  schema.Float64Attribute{Optional: true},
-			"range":   schema.Float64Attribute{Optional: true, Description: "Radius scale."},
-			"shadows": schema.BoolAttribute{Optional: true},
-			"asset":   schema.StringAttribute{Optional: true, Computed: true, Description: "Lights gradient/cookie texture.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"id": idAttribute(),
+			"x": schema.Float64Attribute{Optional: true, Computed: true,
+				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
+			"y": schema.Float64Attribute{Optional: true, Computed: true,
+				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
+			"color":   schema.StringAttribute{Optional: true, Description: "#rrggbb", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"energy":  schema.Float64Attribute{Optional: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"range":   schema.Float64Attribute{Optional: true, Description: "Radius scale.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"shadows": schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
+			"asset": schema.StringAttribute{Optional: true, Computed: true, Description: "Lights gradient/cookie texture.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
 		},
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -34,16 +35,21 @@ type roofModel struct {
 
 func (r *roofResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A roof built from its RIDGE LINE (a peak line, not a footprint). Points replace; no reshape API.",
+		Description: "A roof built from its RIDGE LINE (a peak line, not a footprint). No modify-roof API exists — every attribute replaces on change.",
 		Attributes: map[string]schema.Attribute{
-			"id":     idAttribute(),
-			"asset":  schema.StringAttribute{Required: true, Description: "A Roofs asset path."},
-			"points": schema.ListAttribute{Required: true, ElementType: pointElemType, Description: "The roof ridge, [x,y] pairs in woxels."},
+			"id": idAttribute(),
+			"asset": schema.StringAttribute{Required: true, Description: "A Roofs asset path.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"points": schema.ListAttribute{Required: true, ElementType: pointElemType, Description: "The roof ridge, [x,y] pairs in woxels.",
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()}},
 			// Read syncs width/type from the live roof, so they must be
 			// Optional+Computed — a value DD applied by default is not drift.
-			"width":   schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
-			"type":    schema.Int64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()}},
-			"sorting": schema.Int64Attribute{Optional: true, Description: "0=over, 1=under."},
+			// RequiresReplace still applies on an explicit change.
+			"width": schema.Float64Attribute{Optional: true, Computed: true,
+				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
+			"type": schema.Int64Attribute{Optional: true, Computed: true,
+				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
+			"sorting": schema.Int64Attribute{Optional: true, Description: "0=over, 1=under.", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
 		},
 	}
 }
@@ -160,15 +166,18 @@ type textModel struct {
 
 func (r *textResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A text label at a woxel position (add_text).",
+		Description: "A text label at a woxel position (add_text). x/y update in place (move_element, like dungeondraft_object); text/size/color/font have no modify-text API and replace.",
 		Attributes: map[string]schema.Attribute{
-			"id":    idAttribute(),
-			"text":  schema.StringAttribute{Required: true},
+			"id": idAttribute(),
+			// text/size/color/font have no bridge update path, so a change
+			// replaces; x/y do not (Update calls move_element) and are left
+			// without RequiresReplace.
+			"text":  schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			"x":     schema.Float64Attribute{Required: true},
 			"y":     schema.Float64Attribute{Required: true},
-			"size":  schema.Int64Attribute{Optional: true, Computed: true, Description: "Font size in points.", PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()}},
-			"color": schema.StringAttribute{Optional: true, Computed: true, Description: "#rrggbb", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
-			"font":  schema.StringAttribute{Optional: true, Computed: true, Description: "A DD font name.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"size":  schema.Int64Attribute{Optional: true, Computed: true, Description: "Font size in points.", PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
+			"color": schema.StringAttribute{Optional: true, Computed: true, Description: "#rrggbb", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
+			"font":  schema.StringAttribute{Optional: true, Computed: true, Description: "A DD font name.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
 		},
 	}
 }
@@ -244,7 +253,28 @@ func (r *textResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 }
 
 func (r *textResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	noUpdate(ctx, req, resp)
+	if r.client == nil {
+		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
+		return
+	}
+	var plan, state textModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// x/y are the only in-place-updatable fields (move_element works on any
+	// node kind); everything else that could change is RequiresReplace, so
+	// this is the only case Update ever actually runs for.
+	if plan.X != state.X || plan.Y != state.Y {
+		resp.Diagnostics.Append(moveNode(ctx, r.client, state.ID.ValueString(), plan.X.ValueFloat64(), plan.Y.ValueFloat64())...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+	state.X = plan.X
+	state.Y = plan.Y
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *textResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -283,16 +313,23 @@ type patternModel struct {
 
 func (r *patternResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A tiled floor/pattern shape (rect or polygon) rendering below objects.",
+		Description: "A tiled floor/pattern shape (rect or polygon) rendering below objects. No modify-pattern API exists — every attribute replaces on change.",
 		Attributes: map[string]schema.Attribute{
-			"id":       idAttribute(),
-			"asset":    schema.StringAttribute{Required: true, Description: "A pattern asset path."},
-			"category": schema.StringAttribute{Optional: true, Description: "Patterns, Patterns Colorable, Materials, Simple Tiles, Smart Tiles."},
-			"rect":     schema.ListAttribute{Optional: true, ElementType: types.Int64Type, Description: "[x, y, w, h] rectangle, alternative to points."},
-			"points":   schema.ListAttribute{Optional: true, ElementType: pointElemType, Description: "[[x,y], ...] polygon, alternative to rect."},
-			"color":    schema.StringAttribute{Optional: true, Description: "#rrggbb tint; omit for the tileset default."},
-			"rotation": schema.Float64Attribute{Optional: true, Description: "Pattern rotation in degrees."},
-			"z":        schema.Int64Attribute{Optional: true, Description: "Absolute z_index (default -100)."},
+			"id": idAttribute(),
+			"asset": schema.StringAttribute{Required: true, Description: "A pattern asset path.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"category": schema.StringAttribute{Optional: true, Description: "Patterns, Patterns Colorable, Materials, Simple Tiles, Smart Tiles.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"rect": schema.ListAttribute{Optional: true, ElementType: types.Int64Type, Description: "[x, y, w, h] rectangle, alternative to points.",
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()}},
+			"points": schema.ListAttribute{Optional: true, ElementType: pointElemType, Description: "[[x,y], ...] polygon, alternative to rect.",
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()}},
+			"color": schema.StringAttribute{Optional: true, Description: "#rrggbb tint; omit for the tileset default.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"rotation": schema.Float64Attribute{Optional: true, Description: "Pattern rotation in degrees.",
+				PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"z": schema.Int64Attribute{Optional: true, Description: "Absolute z_index (default -100).",
+				PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
 		},
 	}
 }
@@ -424,15 +461,18 @@ type pathModel struct {
 
 func (r *pathResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A path/road/river through woxel points (draw_path).",
+		Description: "A path/road/river through woxel points (draw_path). No modify-path API exists — every attribute replaces on change.",
 		Attributes: map[string]schema.Attribute{
-			"id":         idAttribute(),
-			"asset":      schema.StringAttribute{Required: true, Description: "A Paths asset path."},
-			"points":     schema.ListAttribute{Required: true, ElementType: pointElemType},
-			"smoothness": schema.Float64Attribute{Optional: true, Computed: true, Description: "Curve smoothing.", PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
-			"width":      schema.Float64Attribute{Optional: true, Description: "Width scale multiplier."},
-			"layer":      schema.Int64Attribute{Optional: true},
-			"sorting":    schema.Int64Attribute{Optional: true},
+			"id": idAttribute(),
+			"asset": schema.StringAttribute{Required: true, Description: "A Paths asset path.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"points": schema.ListAttribute{Required: true, ElementType: pointElemType,
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()}},
+			"smoothness": schema.Float64Attribute{Optional: true, Computed: true, Description: "Curve smoothing.",
+				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
+			"width":   schema.Float64Attribute{Optional: true, Description: "Width scale multiplier.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"layer":   schema.Int64Attribute{Optional: true, PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"sorting": schema.Int64Attribute{Optional: true, PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
 		},
 	}
 }
@@ -476,6 +516,7 @@ func (r *pathResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 	m.ID = types.StringValue(id)
+	coerceUnknownToNull(&m)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 
