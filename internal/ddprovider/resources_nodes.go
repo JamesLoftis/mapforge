@@ -52,6 +52,15 @@ func (b *nodeResourceBase) deleteID(ctx context.Context, id string, resp *resour
 	resp.Diagnostics.Append(deleteNode(ctx, b.client, id)...)
 }
 
+// ImportState is identical for every node/shape-kind resource — `terraform
+// import` supplies the bridge's numeric element id directly as the
+// resource's `id` attribute. Promoted by embedding to every resource type
+// below and in resources_shapes.go, exactly like Configure already is; none
+// of them need to (or should) redeclare it.
+func (b *nodeResourceBase) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
 // pointElemType is the per-point element type ([x, y], a list of two ints)
 // shared by every kind whose `points` attribute is a list of [x,y] pairs.
 var pointElemType = types.ListType{ElemType: types.Int64Type}
@@ -204,20 +213,12 @@ func (r *wallResource) Update(ctx context.Context, req resource.UpdateRequest, r
 }
 
 func (r *wallResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	if r.client == nil {
-		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
-		return
-	}
 	var m wallModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	resp.Diagnostics.Append(deleteNode(ctx, r.client, m.ID.ValueString())...)
-}
-
-func (r *wallResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	r.deleteID(ctx, m.ID.ValueString(), resp)
 }
 
 // ---- dungeondraft_portal (add_portal) ------------------------------------
@@ -375,20 +376,12 @@ func (r *portalResource) Update(ctx context.Context, req resource.UpdateRequest,
 }
 
 func (r *portalResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	if r.client == nil {
-		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
-		return
-	}
 	var m portalModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	resp.Diagnostics.Append(deleteNode(ctx, r.client, m.ID.ValueString())...)
-}
-
-func (r *portalResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	r.deleteID(ctx, m.ID.ValueString(), resp)
 }
 
 // ---- dungeondraft_object (place_object) -----------------------------------
@@ -592,20 +585,12 @@ func (r *objectResource) Update(ctx context.Context, req resource.UpdateRequest,
 }
 
 func (r *objectResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	if r.client == nil {
-		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
-		return
-	}
 	var m objectModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	resp.Diagnostics.Append(deleteNode(ctx, r.client, m.ID.ValueString())...)
-}
-
-func (r *objectResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	r.deleteID(ctx, m.ID.ValueString(), resp)
 }
 
 // ---- dungeondraft_light (add_light) ---------------------------------------
@@ -732,18 +717,10 @@ func (r *lightResource) Update(ctx context.Context, req resource.UpdateRequest, 
 }
 
 func (r *lightResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	if r.client == nil {
-		resp.Diagnostics.AddError("Provider not configured", "The bridge client was not available.")
-		return
-	}
 	var m lightModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &m)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	resp.Diagnostics.Append(deleteNode(ctx, r.client, m.ID.ValueString())...)
-}
-
-func (r *lightResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	r.deleteID(ctx, m.ID.ValueString(), resp)
 }

@@ -3,7 +3,6 @@ package ddprovider
 import (
 	"context"
 
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float64planmodifier"
@@ -138,10 +137,6 @@ func (r *roofResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 		return
 	}
 	r.deleteID(ctx, m.ID.ValueString(), resp)
-}
-
-func (r *roofResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
 // ---- dungeondraft_text (add_text) -----------------------------------------
@@ -284,10 +279,6 @@ func (r *textResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 		return
 	}
 	r.deleteID(ctx, m.ID.ValueString(), resp)
-}
-
-func (r *textResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
 // ---- dungeondraft_pattern (place_pattern) ---------------------------------
@@ -435,10 +426,6 @@ func (r *patternResource) Delete(ctx context.Context, req resource.DeleteRequest
 	r.deleteID(ctx, m.ID.ValueString(), resp)
 }
 
-func (r *patternResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
-}
-
 // ---- dungeondraft_path (draw_path) ----------------------------------------
 
 type pathResource struct{ *nodeResourceBase }
@@ -561,8 +548,4 @@ func (r *pathResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 		return
 	}
 	r.deleteID(ctx, m.ID.ValueString(), resp)
-}
-
-func (r *pathResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
