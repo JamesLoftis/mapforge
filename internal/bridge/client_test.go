@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -179,6 +180,41 @@ func TestRunOnLevelSkipsWhenEmpty(t *testing.T) {
 	}
 	if res["ok"] != "yes" {
 		t.Errorf("res = %v, want fn's return value passed through", res)
+	}
+}
+
+// TestRunOnLevelUntargetedCallsRunConcurrently guards the RWMutex choice
+// (vs. a plain Mutex, which an earlier version of RunOnLevel used and which
+// technically fixed the level-targeting race but serialized every create in
+// the provider through one lock, all the time — including plans that never
+// use level_id anywhere). Untargeted calls must be able to run in parallel
+// with each other; only a level-targeted call should exclude everything
+// else.
+func TestRunOnLevelUntargetedCallsRunConcurrently(t *testing.T) {
+	c := New("127.0.0.1", 1) // no network touched by an untargeted call
+	const n = 8
+	const delay = 50 * time.Millisecond
+
+	var wg sync.WaitGroup
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = c.RunOnLevel(context.Background(), "", func() (map[string]any, error) {
+				time.Sleep(delay)
+				return nil, nil
+			})
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	// Serialized (a plain Mutex): >= n*delay (400ms). Concurrent: ~delay
+	// (50ms) plus scheduling noise. Threshold well between the two so this
+	// doesn't flake but still catches a real regression.
+	if want := time.Duration(n) * delay / 2; elapsed >= want {
+		t.Errorf("elapsed = %v, want well under %v (n=%d calls of %v each) — untargeted RunOnLevel calls appear to be serialized", elapsed, want, n, delay)
 	}
 }
 

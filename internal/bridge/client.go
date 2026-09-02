@@ -56,31 +56,32 @@ type Client struct {
 	Timeout  time.Duration // per-socket timeout for dial and reads
 	Attempts int           // transport retry count (>= 1)
 
-	// levelMu serializes every RunOnLevel call, targeted or not. set_level is
-	// bridge-side GLOBAL mutable state, addressed by index, and every create
-	// command implicitly targets whatever level is currently active — so two
-	// RunOnLevel calls racing (e.g. two resources targeting different levels
-	// created concurrently, which Terraform's default parallelism makes
-	// routine) can otherwise interleave their set_level and create calls and
-	// land an element on the wrong level. This must be held across the whole
-	// resolve+switch+act sequence, not just the set_level call itself:
-	// bridge_app's own agentPump already serializes individual *commands*
-	// onto the single DD agent link (bridge_app/internal/core/bridge.go),
-	// but that doesn't make this client's 3-command sequence atomic — two
-	// different callers' sequences can still interleave inside that queue
-	// unless something on this side holds them together.
+	// levelMu excludes level-targeted RunOnLevel calls from every other
+	// RunOnLevel call, targeted or not, while letting untargeted calls run
+	// fully concurrently with each other. set_level is bridge-side GLOBAL
+	// mutable state, addressed by index, and every create command implicitly
+	// targets whatever level is currently active — so a level-targeted call
+	// (list_levels + set_level + the actual create) must run with nothing
+	// else interleaved, or another call can land between its set_level and
+	// its own create and end up on the wrong level. bridge_app's own
+	// agentPump already serializes individual *commands* onto the single DD
+	// agent link (bridge_app/internal/core/bridge.go), but that doesn't make
+	// this client's 3-command sequence atomic — two different callers'
+	// sequences can still interleave inside that queue unless something on
+	// this side holds them together, and that includes an untargeted call:
+	// it's not exempt just because it doesn't care which level it's on.
 	//
-	// Crucially this must be held for a levelID=="" call too, not just
-	// skipped: a plain create with no level targeting can still land between
-	// a concurrent level-targeted call's set_level and its own create if it
-	// isn't serialized against that call — an untargeted create is not
-	// exempt from the race just because it doesn't care which level it's
-	// on. bridge_app's own per-command queue doesn't help here either (see
-	// above); only excluding the two calls from each other on this side
-	// does. The cost is every create now serializes with every other create
-	// whenever level_id is used anywhere in the plan — acceptable, since
-	// bridge_app was already a de facto bottleneck of one command at a time.
-	levelMu sync.Mutex
+	// A plain sync.Mutex taken unconditionally (an earlier version of this)
+	// technically fixed the race but serialized every single create in the
+	// provider through one lock, all the time — including plans that never
+	// use level_id anywhere, which is the common case and shouldn't pay for
+	// this at all. RWMutex fixes that: a level-targeted call takes the
+	// exclusive Lock (blocks everything, correctly — it's the one actually
+	// mutating "current level"), an untargeted call takes the shared RLock
+	// (blocks only against an in-flight targeted call, runs fully
+	// concurrently with other untargeted calls otherwise — Terraform's
+	// default parallelism is unaffected when levels aren't in play).
+	levelMu sync.RWMutex
 }
 
 // New returns a client for host:port with the defaults bridge_client.py used.
@@ -130,18 +131,20 @@ func (c *Client) Request(ctx context.Context, cmd string, params map[string]any)
 // returns an index, only list_levels does, so this always re-resolves it
 // fresh rather than trusting a cached one) to its current index, switches
 // the bridge's active level, then runs fn — the whole sequence under
-// levelMu so no other RunOnLevel call's set_level/create can land in
-// between. levelMu is held even when levelID is empty (see its doc comment
-// on Client): every RunOnLevel call — targeted or not — must be excluded
-// from every other one, or an untargeted call can land between a targeted
-// call's set_level and its own create.
+// levelMu's exclusive Lock so no other RunOnLevel call, targeted or not,
+// can land in between. An empty levelID instead takes the shared RLock and
+// runs fn directly: it still needs to be excluded from a concurrent
+// targeted call, but not from other untargeted calls (see the field's doc
+// comment on Client for why this is RWMutex and not a plain Mutex).
 func (c *Client) RunOnLevel(ctx context.Context, levelID string, fn func() (map[string]any, error)) (map[string]any, error) {
-	c.levelMu.Lock()
-	defer c.levelMu.Unlock()
-
 	if levelID == "" {
+		c.levelMu.RLock()
+		defer c.levelMu.RUnlock()
 		return fn()
 	}
+
+	c.levelMu.Lock()
+	defer c.levelMu.Unlock()
 
 	lv, err := c.Request(ctx, "list_levels", nil)
 	if err != nil {

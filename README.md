@@ -208,13 +208,17 @@ Two things make this more than "just another param":
   — every creator command implicitly targets whatever that is, and there's
   no way to pass a level directly to `place_object` etc. So `level_id`
   works by having the provider call `set_level` immediately before the
-  create, under a mutex that serializes the whole
-  resolve-index → switch → create sequence (`bridge.Client.RunOnLevel`) —
-  otherwise two resources targeting different levels, created concurrently
-  (Terraform's default `-parallelism` is 10), could interleave their
-  `set_level` calls and land an element on the wrong level. Resources
-  without `level_id` set are unaffected by any of this — they behave
-  exactly as before.
+  create, under an `RWMutex` that serializes the whole
+  resolve-index → switch → create sequence against every *other* create,
+  targeted or not (`bridge.Client.RunOnLevel`) — otherwise a concurrent
+  create (Terraform's default `-parallelism` is 10) could land between this
+  one's `set_level` and its own create and end up on the wrong level, even
+  if that other create never sets `level_id` itself. A `level_id`-targeted
+  create takes the exclusive write lock (it's the one actually mutating
+  "current level," so it has to exclude everything); an untargeted create
+  takes the shared read lock, so untargeted creates still run fully
+  concurrently with each other — only a level-targeted create in the mix
+  costs anything.
 - **`dungeondraft_level` has no delete or rename counterpart in the bridge
   protocol at all** — `add_level`/`set_level`/`list_levels` is the entire
   level write surface. `Delete` only warns; a `label` change replaces
