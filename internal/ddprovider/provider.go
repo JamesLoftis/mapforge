@@ -102,5 +102,6 @@ func (p *ddProvider) Resources(_ context.Context) []func() resource.Resource {
 		NewTerrainFillResource,
 		NewRoomResource,
 		NewLevelResource,
+		NewCaveResource,
 	}
 }

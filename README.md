@@ -151,7 +151,8 @@ work, rather than chaining a big apply straight into an autosave/close.
 | `dungeondraft_text` | `add_text` | x, y (`move_element`) | text, size, color, font replace |
 | `dungeondraft_pattern` | `place_pattern` | — | replaces |
 | `dungeondraft_path` | `draw_path` | — | replaces |
-| `dungeondraft_terrain_fill` | `fill_terrain`/`fill_region` | re-paints in place on any change | — |
+| `dungeondraft_terrain_fill` | `fill_terrain`/`fill_region`/`paint_terrain`/`paint_path` | re-paints in place on any change | — |
+| `dungeondraft_cave` | `dig_cave` | re-applies in place on any change | — |
 | `dungeondraft_room` | `build_room` | — | replaces (compound create — a wall loop + floor in one call, no reshape API) |
 | `dungeondraft_level` | `add_level` | — | replaces, but see the level-targeting section below — this one can't really be deleted either |
 
@@ -170,7 +171,18 @@ bridge side). `dungeondraft_terrain_fill` cannot un-paint; its Delete warns.
 `dungeondraft_portal.wall_id` like a plain wall), and `Delete` removes both
 the wall and the floor pattern shape when `floor = "pattern"` produced one —
 a terrain floor has the same can't-un-paint limitation as
-`dungeondraft_terrain_fill`, and Delete warns instead.
+`dungeondraft_terrain_fill`, and Delete warns instead. `dungeondraft_cave`
+is the one exception to "can't un-paint": `dig_cave` stamps its `dig`
+boolean directly into the cave bitmap, so Delete genuinely reverses a
+stroke by re-running it with `dig` inverted (see the package doc comment on
+`caveResource`) rather than warning.
+
+`dungeondraft_terrain_fill` picks `paint_terrain` or `paint_path` instead
+of `fill_terrain`/`fill_region` when you give it `x`+`y` (a single brush
+dab) or `points`+`radius` together (a brush stroke) — see its own schema
+description for the full four-way selection. `clear_caves` (wipe the whole
+Caves layer) has no resource: like `undo`/`redo`/camera/selection, it has
+no created identity to track or diff against.
 
 ## Levels
 
