@@ -88,13 +88,17 @@ func (r *roomResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
+	// rect and points are mutually exclusive (rect takes precedence if both
+	// are somehow set) — matching dungeondraft_terrain_fill/_cave's
+	// precedence-chain convention elsewhere in this provider. Previously
+	// these were two independent ifs, so setting both silently sent build_room
+	// a request with both rect and points populated at once.
 	params := map[string]any{}
 	haveShape := false
 	if rect := attrToNums(ctx, m.Rect); rect != nil {
 		params["rect"] = rect
 		haveShape = true
-	}
-	if pts, ok, diags := attrToPointList(ctx, m.Points); ok {
+	} else if pts, ok, diags := attrToPointList(ctx, m.Points); ok {
 		params["points"] = pts
 		haveShape = true
 	} else if diags.HasError() {

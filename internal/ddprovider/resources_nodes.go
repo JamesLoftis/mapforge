@@ -601,7 +601,18 @@ func (r *objectResource) Update(ctx context.Context, req resource.UpdateRequest,
 	state.Y = plan.Y
 	state.Rotation = plan.Rotation
 	state.Scale = plan.Scale
-	state.Color = plan.Color
+	// Only when modify_object was actually called with a color — matching
+	// scale/rotation would be equally wrong here, but those two are
+	// Optional+Computed with a bridge default, so plan is never null for
+	// them the way it can be for color once set then removed from config.
+	// modify_object has no "clear the color" input, so a removed color
+	// stays whatever it last was on the bridge; copying plan.Color (null)
+	// into state here would silently record a color change that never
+	// actually happened, and since color can't be read back (see the
+	// schema comment), that drift would never self-correct on a later Read.
+	if color != nil {
+		state.Color = plan.Color
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 

@@ -56,20 +56,30 @@ type Client struct {
 	Timeout  time.Duration // per-socket timeout for dial and reads
 	Attempts int           // transport retry count (>= 1)
 
-	// levelMu serializes RunOnLevel end to end (list_levels + set_level +
-	// the caller's own request). set_level is bridge-side GLOBAL mutable
-	// state, addressed by index, and every create command implicitly
-	// targets whatever level is currently active — so two RunOnLevel calls
-	// racing (e.g. two resources targeting different levels created
-	// concurrently, which Terraform's default parallelism makes routine)
-	// can otherwise interleave their set_level and create calls and land an
-	// element on the wrong level. This must be held across the whole
+	// levelMu serializes every RunOnLevel call, targeted or not. set_level is
+	// bridge-side GLOBAL mutable state, addressed by index, and every create
+	// command implicitly targets whatever level is currently active — so two
+	// RunOnLevel calls racing (e.g. two resources targeting different levels
+	// created concurrently, which Terraform's default parallelism makes
+	// routine) can otherwise interleave their set_level and create calls and
+	// land an element on the wrong level. This must be held across the whole
 	// resolve+switch+act sequence, not just the set_level call itself:
 	// bridge_app's own agentPump already serializes individual *commands*
 	// onto the single DD agent link (bridge_app/internal/core/bridge.go),
 	// but that doesn't make this client's 3-command sequence atomic — two
 	// different callers' sequences can still interleave inside that queue
 	// unless something on this side holds them together.
+	//
+	// Crucially this must be held for a levelID=="" call too, not just
+	// skipped: a plain create with no level targeting can still land between
+	// a concurrent level-targeted call's set_level and its own create if it
+	// isn't serialized against that call — an untargeted create is not
+	// exempt from the race just because it doesn't care which level it's
+	// on. bridge_app's own per-command queue doesn't help here either (see
+	// above); only excluding the two calls from each other on this side
+	// does. The cost is every create now serializes with every other create
+	// whenever level_id is used anywhere in the plan — acceptable, since
+	// bridge_app was already a de facto bottleneck of one command at a time.
 	levelMu sync.Mutex
 }
 
@@ -121,14 +131,17 @@ func (c *Client) Request(ctx context.Context, cmd string, params map[string]any)
 // fresh rather than trusting a cached one) to its current index, switches
 // the bridge's active level, then runs fn — the whole sequence under
 // levelMu so no other RunOnLevel call's set_level/create can land in
-// between. An empty levelID skips all of that and just runs fn directly
-// (the common case: most creates don't target a specific level).
+// between. levelMu is held even when levelID is empty (see its doc comment
+// on Client): every RunOnLevel call — targeted or not — must be excluded
+// from every other one, or an untargeted call can land between a targeted
+// call's set_level and its own create.
 func (c *Client) RunOnLevel(ctx context.Context, levelID string, fn func() (map[string]any, error)) (map[string]any, error) {
+	c.levelMu.Lock()
+	defer c.levelMu.Unlock()
+
 	if levelID == "" {
 		return fn()
 	}
-	c.levelMu.Lock()
-	defer c.levelMu.Unlock()
 
 	lv, err := c.Request(ctx, "list_levels", nil)
 	if err != nil {
@@ -169,10 +182,16 @@ func jsonNumberAsInt64(v any) int64 {
 	return 0
 }
 
-// formatJSONNumber renders a decoded JSON id (typically float64) the same
-// way createNode/idAsString render one for a resource's Terraform id, so a
-// level_id attribute value compares equal to what list_levels reports.
+// formatJSONNumber renders a decoded JSON id — number or string — the same
+// way createNode/idAsString (ddprovider package) render one for a
+// resource's Terraform id, so a level_id attribute value compares equal to
+// what list_levels reports regardless of which JSON type the bridge sent
+// it as. Kept in sync with idAsString by hand (see this package's doc
+// comment: it's a deliberate vendored copy, not a shared import).
 func formatJSONNumber(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
 	return fmt.Sprintf("%d", jsonNumberAsInt64(v))
 }
 

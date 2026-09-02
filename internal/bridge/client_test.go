@@ -207,6 +207,34 @@ func TestRunOnLevelResolvesAndSwitches(t *testing.T) {
 	}
 }
 
+// TestRunOnLevelResolvesStringID guards against formatJSONNumber (used to
+// match list_levels' reported id against the requested levelID) only
+// handling numeric JSON types while ddprovider's idAsString — coercing the
+// exact same field — also handles a string id. If a level id ever comes
+// back JSON-string-typed, this must still resolve instead of silently
+// falling through to "no level with id X".
+func TestRunOnLevelResolvesStringID(t *testing.T) {
+	fb := startFakeBridgeSeq(t, []string{
+		`{"ok":true,"result":{"current_index":0,"levels":[{"id":"7","index":1,"label":"Upper"}]}}`,
+		`{"ok":true,"result":{"current_index":1}}`,
+	})
+	host, port := splitAddr(fb.addr())
+	c := New(host, port)
+	c.Timeout = 500 * time.Millisecond
+
+	called := false
+	_, err := c.RunOnLevel(context.Background(), "7", func() (map[string]any, error) {
+		called = true
+		return map[string]any{}, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error resolving a string-typed level id: %v", err)
+	}
+	if !called {
+		t.Fatal("fn was not called — string-typed id did not match")
+	}
+}
+
 func TestRunOnLevelUnknownID(t *testing.T) {
 	fb := startFakeBridgeSeq(t, []string{
 		`{"ok":true,"result":{"current_index":0,"levels":[{"id":0,"index":0,"label":"Ground"}]}}`,
