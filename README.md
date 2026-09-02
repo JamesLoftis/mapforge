@@ -114,6 +114,31 @@ provider's registered schemas (it does not evaluate expressions — that is what
   live map and remove everything it made (proves the full round trip without
   residue).
 
+## Known risk: saving right after a bulk apply
+
+`dungeondraft-mcp-fork/ROADMAP.md` documents an observed bug: **Dungeondraft
+saves can fail/corrupt when attempted shortly after live bridge activity**
+(three consecutive saves failed immediately after tool-call activity in one
+session; a save after ~15-20s of bridge idle time succeeded). The bridge
+rewrite to `bridge_app` (dial-per-request client, outbound-agent mod
+connection) was intended to remove the lingering-connection cause of this,
+but it has not been re-verified against save-reliability specifically as its
+own acceptance criterion — treat it as **mitigated, not confirmed fixed**.
+
+This provider's `Client.Request` opens and closes a fresh TCP connection per
+bridge call (see `internal/bridge/client.go`), so it holds nothing open
+between calls — but a `terraform apply` that creates many resources still
+means a burst of back-to-back bridge activity immediately before whatever
+save happens next, which is exactly the trigger condition described above.
+This is **not specific to any one resource kind** (`dungeondraft_light` and
+`dungeondraft_path` were flagged as suspect in one downstream project's
+bisection, but their Create calls send exactly what `PROTOCOL.md` specifies
+— nothing in this provider's code is unique to those two).
+
+Until save-reliability is independently re-verified: after a large `apply`,
+save manually and confirm the save in Dungeondraft before doing more bridge
+work, rather than chaining a big apply straight into an autosave/close.
+
 ## Resources
 
 | Resource | Bridge cmd | Shape fields replace | In-place update |
