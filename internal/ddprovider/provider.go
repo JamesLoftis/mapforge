@@ -84,6 +84,7 @@ func (p *ddProvider) DataSources(_ context.Context) []func() datasource.DataSour
 	return []func() datasource.DataSource{
 		NewStatusDataSource,
 		NewAssetsDataSource,
+		NewAssetCategoriesDataSource,
 		NewMapDataSource,
 	}
 }
@@ -99,5 +100,6 @@ func (p *ddProvider) Resources(_ context.Context) []func() resource.Resource {
 		NewPatternResource,
 		NewPathResource,
 		NewTerrainFillResource,
+		NewRoomResource,
 	}
 }

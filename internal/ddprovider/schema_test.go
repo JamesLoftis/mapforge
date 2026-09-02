@@ -24,6 +24,7 @@ var resourcesUnderTest = []struct {
 	{"dungeondraft_pattern", NewPatternResource},
 	{"dungeondraft_path", NewPathResource},
 	{"dungeondraft_terrain_fill", NewTerrainFillResource},
+	{"dungeondraft_room", NewRoomResource},
 }
 
 // dataSourcesUnderTest mirrors provider.DataSources().
@@ -33,6 +34,7 @@ var dataSourcesUnderTest = []struct {
 }{
 	{"dungeondraft_status", NewStatusDataSource},
 	{"dungeondraft_assets", NewAssetsDataSource},
+	{"dungeondraft_asset_categories", NewAssetCategoriesDataSource},
 	{"dungeondraft_map", NewMapDataSource},
 }
 
