@@ -141,22 +141,35 @@ work, rather than chaining a big apply straight into an autosave/close.
 
 ## Resources
 
-| Resource | Bridge cmd | Shape fields replace | In-place update |
+| Resource | Bridge cmd | In-place update | Everything else |
 | --- | --- | --- | --- |
-| `dungeondraft_wall` | `draw_wall` | points/asset/loop/type/joint | move only |
-| `dungeondraft_portal` | `add_portal` | asset (+wall_id) | — |
-| `dungeondraft_object` | `place_object` | asset/rotation/scale | x, y (move_element) |
-| `dungeondraft_light` | `add_light` | — | — |
-| `dungeondraft_roof` | `add_roof` | points (ridge)/width/type | — |
-| `dungeondraft_text` | `add_text` | text/size/color/font | — |
-| `dungeondraft_pattern` | `place_pattern` | points/rect/asset | — |
-| `dungeondraft_path` | `draw_path` | points/asset/smoothness | — |
-| `dungeondraft_terrain_fill` | `fill_terrain`/`fill_region` | re-paints on change | — |
+| `dungeondraft_wall` | `draw_wall` | — | replaces |
+| `dungeondraft_portal` | `add_portal` | — | replaces |
+| `dungeondraft_object` | `place_object` | x, y (`move_element`), rotation, scale, color (`modify_object`) | asset, sorting, z replace |
+| `dungeondraft_light` | `add_light` | — | replaces |
+| `dungeondraft_roof` | `add_roof` | — | replaces |
+| `dungeondraft_text` | `add_text` | x, y (`move_element`) | text, size, color, font replace |
+| `dungeondraft_pattern` | `place_pattern` | — | replaces |
+| `dungeondraft_path` | `draw_path` | — | replaces |
+| `dungeondraft_terrain_fill` | `fill_terrain`/`fill_region` | re-paints in place on any change | — |
+| `dungeondraft_room` | `build_room` | — | replaces (compound create — a wall loop + floor in one call, no reshape API) |
+
+"Replaces" means every attribute in that resource carries `RequiresReplace`:
+the bridge has no update command for it, so a config change destroys and
+recreates the element rather than silently doing nothing (see git history —
+this used to be a real bug: several attributes were `Optional+Computed` for
+drift detection but had neither `RequiresReplace` nor a working `Update`,
+so changing them in config appeared to succeed and changed nothing).
 
 Every node-kind resource stores the bridge's numeric element id as its
 Terraform id, supports `terraform import <id>`, and `Delete` calls
 `delete_element` — which is **genuinely permanent** (not undo-able on the
 bridge side). `dungeondraft_terrain_fill` cannot un-paint; its Delete warns.
+`dungeondraft_room`'s `id` is its wall's element id (so it composes with
+`dungeondraft_portal.wall_id` like a plain wall), and `Delete` removes both
+the wall and the floor pattern shape when `floor = "pattern"` produced one —
+a terrain floor has the same can't-un-paint limitation as
+`dungeondraft_terrain_fill`, and Delete warns instead.
 
 ## Data sources
 
@@ -164,6 +177,8 @@ bridge side). `dungeondraft_terrain_fill` cannot un-paint; its Delete warns.
 - `dungeondraft_assets` — search an asset category (`category`, `search`,
   `limit`) so a `.tf` can reference a discovered asset path instead of
   hardcoding one.
+- `dungeondraft_asset_categories` — every category name this Dungeondraft
+  install has, for discovering valid `dungeondraft_assets.category` values.
 - `dungeondraft_map` — full `dump_state` of every element (id, kind, wall_id,
   position, asset) plus the raw JSON, for drift inspection and import tooling.
 
@@ -181,6 +196,10 @@ the next `terraform plan`:
 - **text** — position (x/y), text, size, color, font
 - **path** — points, smoothness
 - **pattern** — points (only when the resource was declared with `points`)
+- **room** — existence only (whether its wall id still exists); the wall's
+  own geometry isn't synced the way a plain `dungeondraft_wall`'s is, and a
+  painted terrain floor has no getter to drift-check against at all (same as
+  `dungeondraft_terrain_fill`)
 
 Fields the bridge cannot read back stay write-only (trusted from config):
 
@@ -189,9 +208,10 @@ Fields the bridge cannot read back stay write-only (trusted from config):
   rectangle cannot be reconstructed from an arbitrary polygon, so
   `rect`-declared patterns are existence-checked only).
 
-For fields with an in-place update path only `move_element` (object x/y) is
-wired; everything else `RequiresReplace` because the bridge has no reshape API
-for them yet.
+The only fields with a real in-place update path are `dungeondraft_object`'s
+x/y (`move_element`) and rotation/scale/color (`modify_object`), and
+`dungeondraft_text`'s x/y (`move_element`). Every other field is
+`RequiresReplace` because the bridge has no reshape/modify API for it.
 
 ## Related docs
 
