@@ -84,6 +84,17 @@ func helloAgent(t *testing.T, addr string) *client {
 // fakeAgent replies to every forwarded command with a single canned result.
 func fakeAgent(t *testing.T, addr string, result map[string]any) *client {
 	t.Helper()
+	return fakeAgentFunc(t, addr, func(req map[string]any) map[string]any {
+		return map[string]any{"ok": true, "result": result}
+	})
+}
+
+// fakeAgentFunc replies to each forwarded command using a caller-supplied
+// function of the decoded request, so a test can vary the response per
+// call (e.g. fail once, then succeed) rather than always returning the
+// same canned result.
+func fakeAgentFunc(t *testing.T, addr string, reply func(req map[string]any) map[string]any) *client {
+	t.Helper()
 	cl := helloAgent(t, addr)
 	go func() {
 		for {
@@ -98,7 +109,7 @@ func fakeAgent(t *testing.T, addr string, result map[string]any) *client {
 			if _, isHello := req["agent_hello"]; isHello {
 				continue
 			}
-			b, _ := json.Marshal(map[string]any{"ok": true, "result": result})
+			b, _ := json.Marshal(reply(req))
 			cl.conn.Write(append(b, '\n'))
 		}
 	}()
@@ -329,5 +340,63 @@ func TestConnectionsAndAdminSnapshot(t *testing.T) {
 	}
 	if b.UptimeSeconds() <= 0 {
 		t.Fatalf("uptime not positive")
+	}
+}
+
+// TestTerrainSlot4to7ErrorRelayedThenFixWorks is a regression test for the
+// splatImage2-is-null bug (mcp_bridge.gd's _open_splat / _init_splat2):
+// confirmed live, every paint_terrain call on slots 4-7 failed identically
+// with "bridge rejected paint_terrain: could not read splat image for slot
+// N" because Dungeondraft never allocated the second splat image for that
+// level. bridge_app itself has no slot-specific logic -- it's a dumb
+// relay -- so this only pins down that (a) the exact error string reaches
+// the client byte-for-byte, not swallowed or rewritten into something
+// generic, and (b) nothing on this path is stateful in a way that would
+// keep failing calls to the SAME slot after the mod-side fix starts
+// succeeding (e.g. a bad "first response wins" cache). It cannot exercise
+// the actual fix -- that's GDScript, tested separately in
+// mod_tests/unit/test_open_splat.gd against
+// a fake Terrain, since this repo's Go side never sees a real Dungeondraft
+// engine either way.
+func TestTerrainSlot4to7ErrorRelayedThenFixWorks(t *testing.T) {
+	addr, _, _ := startBridge(t, Options{})
+
+	var calls int
+	ac := fakeAgentFunc(t, addr, func(req map[string]any) map[string]any {
+		if req["cmd"] != "paint_terrain" {
+			return map[string]any{"ok": true, "result": map[string]any{}}
+		}
+		calls++
+		if calls == 1 {
+			// Pre-fix behavior: every slot 4-7 call fails identically.
+			return map[string]any{"ok": false, "error": "bridge rejected paint_terrain: could not read splat image for slot 5"}
+		}
+		// Post-fix behavior: same slot, now succeeds (simulating a mod
+		// reload picking up the _init_splat2 fix between these two calls).
+		return map[string]any{"ok": true, "result": map[string]any{"painted_slot": float64(5), "pixels": float64(42)}}
+	})
+	defer ac.conn.Close()
+
+	cl := dial(t, addr)
+	defer cl.conn.Close()
+
+	cl.send(map[string]any{"cmd": "paint_terrain", "slot": 5, "x": 100, "y": 100, "radius": 50})
+	first := cl.recv(t)
+	if okTrue(first) {
+		t.Fatalf("expected the first call to fail (pre-fix simulation), got: %v", first)
+	}
+	wantErr := "bridge rejected paint_terrain: could not read splat image for slot 5"
+	if got := errStr(first); got != wantErr {
+		t.Fatalf("error not relayed verbatim: got %q, want %q", got, wantErr)
+	}
+
+	cl.send(map[string]any{"cmd": "paint_terrain", "slot": 5, "x": 100, "y": 100, "radius": 50})
+	second := cl.recv(t)
+	if !okTrue(second) {
+		t.Fatalf("expected the second call to succeed (post-fix simulation), got: %v", second)
+	}
+	res := resultOf(t, second)
+	if slot, _ := res["painted_slot"].(float64); slot != 5 {
+		t.Fatalf("result not relayed correctly: %v", second)
 	}
 }
