@@ -1,0 +1,6 @@
+terraform-provider-dungeondraft
+terraform-provider-dungeondraft.exe
+*.test
+*.tfstate
+*.tfstate.*
+.terraform/
