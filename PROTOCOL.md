@@ -2,12 +2,48 @@
 
 A deliberately tiny protocol so both halves stay trivial to extend.
 
-- **Transport:** TCP on `127.0.0.1:8787` (override the mod's `PORT` const and the
-  server's `DD_BRIDGE_PORT` env var together).
+- **Transport:** TCP on `127.0.0.1:8787` (override the app's `-addr` flag and the
+  server's `DD_BRIDGE_PORT` env var together). The port is owned by the
+  **Dungeondraft Bridge app** (`bridge_app/`), a standalone process — not by the
+  mod. The mod dials the app as an **agent**; clients only ever talk to the app.
 - **Framing:** one JSON object per line, terminated by `\n`, UTF-8.
-- **Model:** request/response. The MCP server opens a connection, writes one
-  request line, reads one response line. The mod also tolerates multiple
-  requests on a persistent connection.
+- **Model:** request/response, one request at a time over a **single persistent
+  connection**. The MCP server keeps its socket alive itself: a background
+  watchdog pings every few seconds while idle and reconnects the moment the link
+  breaks, and transport failures are retried on a fresh connection before any
+  error reaches the caller. The app answers `ping` itself and reports whether
+  Dungeondraft is actually reachable, so liveness never depends on the mod.
+
+## Roles and connection setup
+
+Three kinds of socket call the port home — the app tells them apart by their
+first frame:
+
+- **agent** — the Dungeondraft mod (`mcp_bridge.gd`). Its first frame is a
+  registration; it then answers commands the app forwards, and heartbeats
+  (`{"cmd":"ping"}`) every ~5s so the app can report `dd_connected`.
+  Only one agent may be connected; a new `agent_hello` supersedes the old socket.
+
+  ```json
+  { "agent_hello": { "name": "mcp_bridge_mod", "protocol": 17 } }
+  ```
+
+  → `{ "ok": true, "result": { "agent": "registered", "protocol": 17 } }`
+
+  The agent **never replies to** `ping` — a `{"cmd":"ping"}` sent from the agent
+  side is a heartbeat, answered by the app and consumed by the agent.
+
+- **user** — the MCP server / provider / any client. Sends normal command
+  frames (see below). This is the only role with a meaningful `ok`/`result`.
+
+With no agent connected, every *user* command except `ping` is answered with:
+
+```json
+{ "ok": false, "error": "dungeondraft offline: bridge agent not connected" }
+```
+
+A plain structured reason — not a dead port — so a crashed/absent mod is
+diagnosable at a glance (see `bridge_app/` for the health page and `/health`).
 
 ## Request
 
@@ -43,20 +79,36 @@ Coordinates are **woxel** (world pixel) space; map center is in
 
 | cmd | params | result |
 | --- | --- | --- |
-| `ping` | — | `{ pong, protocol, engine }` |
+| `ping` | — | `{ pong, protocol, app, dd_connected }` — answered by the app itself; `dd_connected` false when no agent is linked |
 | `get_status` | — | `{ map_open, level_id, level_count, map_size_woxels, map_center, counts{}, active_tool }` |
 | `list_asset_categories` | — | `{ categories[] }` |
 | `list_assets` | `category="Objects"`, `search=""`, `limit=100` | `{ category, total, matched, returned, assets[] }` |
 | `list_elements` | `kind="objects"`, `limit=200` | `{ kind, count, elements[] }` |
 | `get_element` | `id` | element descriptor |
+| `dump_state` | — | `{ count, elements[] }` — the whole level in one call |
 | `list_levels` | — | `{ current_index, levels[] }` |
+
+`dump_state` walks **every** collection in one round trip: wall-mounted portals
+(from inside each wall), pattern shapes (`level.PatternShapes.GetShapes()`),
+then each `objects, walls, lights, paths, portals, roofs, texts` group. Each
+element uses the same descriptor as `get_element`, so shape-bearing kinds carry
+their full geometry — the point-in-time snapshot backup/restore and provider
+`Read`/import are built on. `kind` ∈ `objects, walls, lights, paths, portals,
+roofs, texts` (plus `wall_portal`/`pattern` inside a dump).
 
 `kind` ∈ `objects, walls, lights, paths, portals, roofs, texts`. An element
 descriptor is `{ id, kind, position[x,y], rotation(deg), scale, asset? }`.
 
+Shape-bearing kinds also report their world-space geometry as `points:
+[[x,y],...]` — the wall outline (`Wall.Points`), path edit polyline
+(`Pathway.GlobalEditPoints`), roof RIDGE line (`Roof.points`) and pattern-shape
+polygon (`PatternShape.GlobalPolygon`). Walls add `loop`/`type`/`joint`, paths
+add `smoothness`, roofs add `width`/`type`.
+
 `portals` includes **wall-mounted** portals (doors/windows), which live inside
 each wall's `Portals` array rather than `level.Portals` — `list_elements` walks
-the walls to surface them. A wall portal describes as `{ id, kind:"wall_portal",
+the walls to surface them, and `get_status`'s `counts.portals` sums them in too.
+A wall portal describes as `{ id, kind:"wall_portal",
 wall_id, position[x,y], normal[x,y], facing(deg), radius, closed, asset? }`
 where `position` is the door's gap center and `normal` is the outward unit
 vector (perpendicular to the wall, pointing out of the room). To route a road to
@@ -70,13 +122,18 @@ node; default color is black.
 
 ### Create (each returns `{ id, ... }`)
 
+Shape-bearing creates echo the geometry they drew, so you can `get_element`
+on the returned id without a follow-up call: `draw_wall` → `{ id, points,
+loop }`, `draw_path` → `{ id, points }`, `add_roof` → `{ id, points,
+width, type }`, `place_pattern` → `{ id, points, ... }`.
+
 | cmd | params |
 | --- | --- |
-| `place_object` | `asset`, `x?`, `y?`, `scale=1`, `rotation=0`, `sorting=0`, `color?` |
+| `place_object` | `asset`, `x?`, `y?`, `scale=1`, `rotation=0`, `sorting=0`, `color?`, `z?` |
 | `draw_wall` | `points[[x,y]...]`, `asset?`, `loop=false`, `shadow=true`, `type=0`, `joint=1`, `color?` |
 | `draw_path` | `points[[x,y]...]`, `asset`, `layer=0`, `sorting=0`, `smoothness?`, `width?` |
 | `add_light` | `x?`, `y?`, `color?`, `energy=1`, `range=1`, `shadows=true`, `asset?` |
-| `add_portal` | `asset`, `x?`, `y?`, `closed=false`, `radius=64`, `mount="wall"`, `snap_max=256`, `flip=false`, `fallback_free=true`, `rotation=0` |
+| `add_portal` | `asset`, `x?`, `y?`, `closed=false`, `radius=64`, `mount="wall"`, `snap_max=256`, `flip=false`, `fallback_free=true`, `rotation=0`, `wall_id?` |
 | `add_roof` | `points[[x,y]...]` (the RIDGE line), `asset`, `width=256`, `type=0`, `sorting=0` |
 | `add_text` | `text`, `x?`, `y?`, `size?`, `color?`, `font?` |
 | `place_pattern` | `asset`, `rect=[x,y,w,h]` **or** `points=[[x,y]...]`, `category="Patterns"`, `color?`, `rotation?` |
@@ -120,6 +177,12 @@ server uses a temp path and reads it back as an image).
 | cmd | params | result |
 | --- | --- | --- |
 | `screenshot` | `path` | `{ path, width, height }` — window grab, synchronous |
+
+`screenshot` calls `VisualServer.force_draw()` first so it captures a fresh frame
+even when the DD window is unfocused or idle. A minimized window stops the OS
+from compositing, so the frame can go stale there — for a capture that works
+while DD is minimized, render the map with `export_map` instead (background
+thread, headless).
 | `export_map` | `path`, `ppi=40` | `{ path, ppi, async }` — full-map render on a background thread; poll `path` for the file |
 
 ### Camera
@@ -166,10 +229,15 @@ Ctrl+Z in Dungeondraft.
 
 ## Implementation notes
 
-- **Transport** — the mod opens a `TCP_Server` inside Dungeondraft; the modding
-  sandbox on Godot 3.4.2 permits it. If a future DD/Godot version locks this
-  down, the fallback is a file-watch transport: the mod polls a request file via
-  `File` in `update()` and writes a response file.
+- **Transport / roles** — the wire port `tcp://127.0.0.1:8787` is owned by the
+  standalone **bridge app** (`bridge_app/`, Go). The Dungeondraft mod is an
+  outbound **agent**: it dials the app, sends `{"agent_hello":...}`, and answers
+  the user commands the app forwards; it heartbeats (`{"cmd":"ping"}`) every ~5s
+  and reconnects with backoff if the link drops. The app answers user `ping`s
+  locally and replies `"dungeondraft offline: bridge agent not connected"` to any
+  other user command while no agent is linked, so a crashed mod shows up as a
+  structured error (and on `http://127.0.0.1:8788/health`) instead of a dead port.
+  Element handlers still run inside Dungeondraft, so nothing below is affected.
 - **Element ids** — every element is referenced by `node_id`, force-assigned via
   `Global.World.AssignNodeID(node)` on create/list so it resolves immediately
   with `GetNodeByID` / `DeleteNodeByID`.
@@ -204,6 +272,13 @@ Ctrl+Z in Dungeondraft.
   absolute `z_index` (default `z` = -100, between FloorShapes at -200 and Objects
   at 0). Do **not** use `PatternShapeTool.SetLayer()` on an uncreated index — it
   hard-crashes the mod (GDScript has no try/catch; valid range undocumented).
+- **`place_object`** — Objects' parent chain is all `z_as_relative=true` and sums
+  to an effective z of **0**, while any pattern floor that predates the
+  `place_pattern` absolute-z fix (or was laid in the DD UI) sits in "Layer 100"
+  at effective z **100** — so objects rendered **underneath their own room's
+  floor**. `place_object`/`duplicate_object` therefore set `z_as_relative =
+  false` with an absolute `z_index` (default 200: above that 100, below roofs'
+  800). Pass `z` to layer objects above/below other things.
 - **default tints** — `draw_wall` / `place_pattern` apply the texture's own
   default color when no `color` is given (walls via `WallTool.GetWallColor(tex)`,
   patterns by reading back `PatternShapeTool.Color` after setting the texture),
@@ -263,4 +338,12 @@ Ctrl+Z in Dungeondraft.
   (`Level.CreateFreestandingPortal`); when `mount:"wall"` and no wall is near it
   falls back to freestanding unless `fallback_free:false`. `flip` reverses the
   facing. The response `kind` is `"wall_portal"` when mounted, `"portal"` when
-  freestanding.
+  freestanding. Pass `wall_id` to mount on a **specific wall** — the bridge
+  mounts on that wall's nearest segment to `x`/`y`, skipping the map-wide
+  nearest-wall search (deterministic input for declarative tools; errors if
+  the id isn't a wall).
+
+All shape/params inputs are validated defensively (A5): out-of-range terrain
+`slot` (0–7), `radius`/`width`/`ppi` ≤ 0, unknown `type`/`joint` enums, and
+malformed `points` arrays all return `_err(...)` — they can never crash the
+dispatch loop (GDScript has no try/catch).

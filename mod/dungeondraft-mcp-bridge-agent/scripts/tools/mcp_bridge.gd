@@ -1,13 +1,17 @@
-# MCP Bridge — Dungeondraft mod
+# MCP Bridge — Dungeondraft mod (agent mode)
 #
-# Opens a localhost TCP server inside Dungeondraft and speaks a tiny
-# newline-delimited JSON protocol (see PROTOCOL.md) so an external MCP server
-# can drive the currently-open map for AI-assisted map building.
+# The mod is now a thin, outbound *agent*: instead of hosting the localhost TCP
+# server inside Dungeondraft (which died silently whenever a handler crashed),
+# it dials the standalone Dungeondraft Bridge app (bridge_app) on
+# 127.0.0.1:8787, registers with an agent_hello frame, and answers the commands
+# the app forwards. The app answers user pings itself and reports dd_connected
+# from this agent's heartbeats, so a crashed mod leaves a clear
+# "dungeondraft offline" instead of a dead port. See bridge_app/.
 #
 # Engine: Dungeondraft runs Godot 3.4.2, so this uses the Godot 3 networking
-# class names (TCP_Server / StreamPeerTCP) and the connect(sig, self, "method")
-# signal form. Mod tool scripts receive a per-frame update(delta) callback but
-# NOT _process / _input, so all socket polling happens in update().
+# class (StreamPeerTCP client) and the connect(sig, self, "method") signal
+# form. Mod tool scripts receive a per-frame update(delta) callback but NOT
+# _process / _input, so all socket polling happens in update().
 #
 # Element model: every element this bridge touches is referenced by an integer
 # `id` == Dungeondraft's node_id (Global.World.AssignNodeID / GetNodeByID /
@@ -21,7 +25,7 @@ var script_class = "tool"
 
 const HOST := "127.0.0.1"
 const PORT := 8787
-const PROTOCOL_VERSION := 16
+const PROTOCOL_VERSION := 17
 
 # Commands that get wrapped in a Dungeondraft undo record (see _record_and_dispatch).
 const CREATE_CMDS := [
@@ -48,10 +52,28 @@ const COLLECTIONS := {
 	"texts": "Texts",
 }
 
-var _server : TCP_Server = null
-var _conns := []         # array of { "peer": StreamPeerTCP, "buf": String }
-var _undo_stack := []    # bridge-managed undo ops (see _build_op / _apply_op)
+var _socket : StreamPeerTCP = null
+var _buf := ""
+var _connected := false          # stream status == CONNECTED
+var _helloed := false            # agent_hello sent on this connection
+var _backoff := 0                # frames until the next reconnect attempt
+var _hb_frames := 0              # frames since the LAST inbound traffic
+var _undo_stack := []            # bridge-managed undo ops (see _build_op / _apply_op)
 var _redo_stack := []
+var _frame := 0                  # per-update-frame counter
+
+# Reconnect backoff in frames; rewritten connections start retrying quickly,
+# then double up to a ~15s cap so a dead app isn't hammered.
+const RECONNECT_BASE := 20
+const RECONNECT_MAX := 900
+# Heartbeat cadence: ping the app every ~5s so it can report dd_connected.
+const HEARTBEAT_FRAMES := 300
+# If the app sends us NOTHING for 3 heartbeats (~15s) the socket is dead (the
+# app answers each ping, so silence means it is gone); force a reconnect than
+# wait for the OS to notice.
+const DEAD_AFTER_FRAMES := HEARTBEAT_FRAMES * 3
+const AGENT_NAME := "mcp_bridge_mod"
+var _label : Label = null        # tool-panel label, refreshed with live status
 
 
 # ---------------------------------------------------------------------------
@@ -60,59 +82,129 @@ var _redo_stack := []
 
 func start():
 	_register_tool()
-	_server = TCP_Server.new()
-	var err = _server.listen(PORT, HOST)
-	if err == OK:
-		print("[mcp-bridge] listening on %s:%d (protocol v%d)" % [HOST, PORT, PROTOCOL_VERSION])
-	else:
-		_server = null
-		print("[mcp-bridge] FAILED to listen on %s:%d (error %d)" % [HOST, PORT, err])
-		OS.alert("MCP bridge could not open port %d (error %d).\nIs it already in use?" % [PORT, err], "MCP Bridge")
+	_connect_socket()
+	print("[mcp-bridge] agent mode: bridging to tcp://%s:%d (protocol v%d)" % [HOST, PORT, PROTOCOL_VERSION])
 
 
 func update(delta : float):
-	if _server == null:
+	_frame += 1
+	if _socket == null:
+		# Between attempts (start / after a loss): wait out the backoff.
+		if _backoff > 0:
+			_backoff -= 1
+			if _backoff == 0:
+				_connect_socket()
+		_refresh_status_label()
 		return
 
-	while _server.is_connection_available():
-		var peer = _server.take_connection()
-		peer.set_no_delay(true)
-		_conns.append({ "peer": peer, "buf": "" })
+	_socket.poll()
+	var st = _socket.get_status()
+	if st == StreamPeerTCP.STATUS_CONNECTED:
+		if not _connected:
+			_connected = true
+			_helloed = false
+			_hb_frames = 0
+			print("[mcp-bridge] connected to bridge app at %s:%d" % [HOST, PORT])
+		if not _helloed:
+			_send({ "agent_hello": { "name": AGENT_NAME, "protocol": PROTOCOL_VERSION }})
+			_helloed = true   # the app registers on receipt; its ack is consumed
+		if _hb_frames >= HEARTBEAT_FRAMES:
+			_send({ "cmd": "ping" })
+			# A stable stretch earns a faster retry if this connection dies.
+			if _backoff > RECONNECT_BASE:
+				_backoff = max(RECONNECT_BASE, _backoff / 2)
+		if _hb_frames > DEAD_AFTER_FRAMES:
+			_teardown_socket("no app traffic for %ds" % int(DEAD_AFTER_FRAMES / 60))
+			return
+		_hb_frames += 1
+		_read_buffered()
+	elif st == StreamPeerTCP.STATUS_CONNECTING or st == StreamPeerTCP.STATUS_NONE:
+		pass  # still dialing; nothing to do this frame
+	else:
+		_teardown_socket("connection error (status %d)" % st)
+	_refresh_status_label()
 
-	var still_open := []
-	for c in _conns:
-		var peer : StreamPeerTCP = c["peer"]
-		if peer.get_status() != StreamPeerTCP.STATUS_CONNECTED:
-			continue
-		var avail = peer.get_available_bytes()
-		if avail > 0:
-			var res = peer.get_data(avail)   # [err, PoolByteArray]
-			if res[0] == OK:
-				c["buf"] += res[1].get_string_from_utf8()
-		var nl = c["buf"].find("\n")
-		while nl != -1:
-			var line = c["buf"].substr(0, nl).strip_edges()
-			c["buf"] = c["buf"].substr(nl + 1)
-			if line != "":
-				_handle_line(peer, line)
-			nl = c["buf"].find("\n")
-		still_open.append(c)
-	_conns = still_open
+
+# Drain app traffic and answer forwarded user commands. Any received frame
+# proves the app is alive, so this also resets the heartbeat clock.
+func _read_buffered():
+	var avail = _socket.get_available_bytes()
+	if avail > 0:
+		var res = _socket.get_data(avail)
+		if res[0] == OK:
+			_buf += res[1].get_string_from_utf8()
+			_hb_frames = 0
+	var nl = _buf.find("\n")
+	while nl != -1:
+		var line = _buf.substr(0, nl).strip_edges()
+		_buf = _buf.substr(nl + 1)
+		if line != "":
+			_handle_request(line)
+		nl = _buf.find("\n")
+
+
+# Write a request/response frame to the app. Never raises.
+func _send(obj):
+	if _socket == null or _socket.get_status() != StreamPeerTCP.STATUS_CONNECTED:
+		return
+	_socket.put_data((JSON.print(obj) + "\n").to_utf8())
+
+
+func _connect_socket():
+	_socket = StreamPeerTCP.new()
+	var err = _socket.connect_to_host(HOST, PORT)
+	if err != OK:
+		_socket = null
+		_backoff = RECONNECT_BASE
+		print("[mcp-bridge] connect_to_host error %d; retrying soon" % err)
+		return
+	_socket.set_no_delay(true)
+	_backoff = RECONNECT_BASE
+
+
+func _teardown_socket(reason : String):
+	print("[mcp-bridge] %s — reconnecting in a bit" % reason)
+	_buf = ""
+	_connected = false
+	_helloed = false
+	_hb_frames = 0
+	if _socket != null:
+		_socket.disconnect_from_host()
+		_socket = null
+	_backoff = _backoff * 2
+	if _backoff < RECONNECT_BASE or _backoff > RECONNECT_MAX:
+		_backoff = RECONNECT_BASE if _backoff <= 0 else RECONNECT_MAX
 
 
 # ---------------------------------------------------------------------------
 # Request handling
 # ---------------------------------------------------------------------------
 
-func _handle_line(peer : StreamPeerTCP, line : String):
+func _handle_request(line : String):
 	var parsed = JSON.parse(line)
 	var req = parsed.result
-	var resp : Dictionary
 	if parsed.error != OK or typeof(req) != TYPE_DICTIONARY:
-		resp = _err("invalid JSON request")
+		return   # malformed app frame — ignore, never let it crash the mod
+	# Agent-side: a frame with no "cmd" is a reply to OUR agent_hello or
+	# heartbeat ping, not a user command — consume it silently.
+	if not req.has("cmd"):
+		return
+	var resp = _record_and_dispatch(req)
+	_send(resp)
+
+
+# Refresh the tool-panel status line. Never raises on a missing label.
+func _refresh_status_label():
+	if _label == null or not is_instance_valid(_label):
+		return
+	var text : String = ""
+	if _socket == null:
+		text = "disconnected — retry in %ds" % int(ceil(float(_backoff) / 60.0))
+	elif not _connected:
+		text = "connecting to %s:%d..." % [HOST, PORT]
 	else:
-		resp = _record_and_dispatch(req)
-	peer.put_data((JSON.print(resp) + "\n").to_utf8())
+		text = "connected to bridge app (v%d)" % PROTOCOL_VERSION
+	_label.set_text(text)
 
 
 # Runs a command and, if it succeeded and is a reversible map edit, pushes an op
@@ -125,10 +217,15 @@ func _record_and_dispatch(req : Dictionary) -> Dictionary:
 
 	var pre = null
 	if cmd in TRANSFORM_CMDS and req.has("id"):
-		var node = Global.World.GetNodeByID(int(req["id"]))
+		var node = Global.World.GetNodeByID(_i(req["id"], -1))
 		if node != null:
 			pre = _snapshot(node)
 
+	# KNOWN GAP: only splatImage (slots 0-3) is snapshotted, never
+	# splatImage2 (slots 4-7) -- undo/redo of a slot 4-7 edit is therefore
+	# incomplete (it won't revert that half of the terrain data). Not fixed
+	# here: this pass is about slots 4-7 being paintable at all (see
+	# _open_splat/_init_splat2), a precondition for this gap mattering.
 	var terrain_before = null
 	if cmd in TERRAIN_CMDS:
 		var lvl = Global.World.GetCurrentLevel()
@@ -158,9 +255,9 @@ func _build_op(cmd, req, result, pre, terrain_before, cave_before = null):
 			if node != null:
 				return { "kind": "create", "node": node, "parent": node.get_parent(), "id": int(id) }
 	elif cmd in TRANSFORM_CMDS and pre != null:
-		var node = Global.World.GetNodeByID(int(req["id"]))
+		var node = Global.World.GetNodeByID(_i(req["id"], -1))
 		if node != null:
-			return { "kind": "transform", "id": int(req["id"]), "old": pre, "new": _snapshot(node) }
+			return { "kind": "transform", "id": _i(req["id"], -1), "old": pre, "new": _snapshot(node) }
 	elif cmd in TERRAIN_CMDS and terrain_before != null:
 		var lvl = Global.World.GetCurrentLevel()
 		if lvl != null:
@@ -292,12 +389,13 @@ func _safe_dispatch(req : Dictionary) -> Dictionary:
 	var cmd = req.get("cmd", "")
 	match cmd:
 		# --- read / query ---
-		"ping": return _ok({ "pong": true, "protocol": PROTOCOL_VERSION, "engine": Engine.get_version_info() })
+		"ping": return _ok({ "pong": true, "protocol": PROTOCOL_VERSION, "mod_version": _mod_version(), "engine": Engine.get_version_info() })
 		"get_status": return _get_status()
 		"list_asset_categories": return _ok({ "categories": ASSET_CATEGORIES })
 		"list_assets": return _list_assets(req)
 		"list_elements": return _list_elements(req)
 		"get_element": return _get_element(req)
+		"dump_state": return _dump_state(req)
 		"list_levels": return _list_levels()
 		"dig_cave": return _dig_cave(req)
 		"clear_caves": return _clear_caves(req)
@@ -356,12 +454,17 @@ const ASSET_CATEGORIES := [
 func _get_status() -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null:
-		return _ok({ "map_open": false })
+		return _ok({ "map_open": false, "mod_version": _mod_version() })
 	var counts := {}
 	for kind in COLLECTIONS:
 		counts[kind] = _collection(level, kind).get_child_count()
+	# level.Portals only holds freestanding portals; wall-mounted doors/windows
+	# (the common case) live inside each wall's own `Portals` array instead —
+	# see _list_elements' handling of kind == "portals" for the same fix.
+	counts["portals"] += _wall_portal_count(level)
 	return _ok({
 		"map_open": true,
+		"mod_version": _mod_version(),
 		"level_id": Global.World.CurrentLevelId,
 		"level_count": Global.World.levels.size(),
 		"map_size_woxels": [Global.World.WoxelDimensions.x, Global.World.WoxelDimensions.y],
@@ -371,10 +474,22 @@ func _get_status() -> Dictionary:
 	})
 
 
+# Wall-mounted portals (the common case for doors/windows) aren't level
+# children, so get_status's generic per-collection child_count() misses them.
+func _wall_portal_count(level) -> int:
+	var n = 0
+	for wall in level.Walls.get_children():
+		var wp = wall.get("Portals")
+		if wp != null:
+			n += wp.size()
+	return n
+
+
 func _list_assets(req : Dictionary) -> Dictionary:
 	var category = req.get("category", "Objects")
 	var search = str(req.get("search", "")).to_lower()
-	var limit = int(req.get("limit", 100))
+	var limit = _i(req.get("limit", 100), 100)
+	if limit < 0: limit = 0
 	var all = Script.GetAssetList(category)
 	if all == null:
 		return _err("unknown asset category: " + str(category))
@@ -438,18 +553,19 @@ func _dig_cave(req : Dictionary) -> Dictionary:
 		if tex != null and cave.has_method("SetFloorTexture"):
 			cave.call("SetFloorTexture", tex)
 
-	# Path -> cell-space points.
+	# Path -> cell-space points. Malformed entries are filtered by _points, so
+	# a bad `points` array degrades to a clean _err instead of a GDScript crash.
 	var pts := []
 	if req.has("points"):
-		for p in req["points"]:
-			pts.append(_cave_cell(cave, Vector2(float(p[0]), float(p[1]))))
+		for p in _points(req["points"]):
+			pts.append(_cave_cell(cave, p))
 	else:
 		pts.append(_cave_cell(cave, _xy(req, Global.World.WoxelDimensions * 0.5)))
 	if pts.empty(): return _err("provide 'points':[[x,y]...] or x/y")
 
 	var value = bool(req.get("value", req.get("dig", true)))
 	var cs = cave.call("get_CellSize")
-	var rad_cells = max(int(round(float(req.get("radius", 256.0)) / cs)), 1)
+	var rad_cells = max(int(round(_num(req.get("radius", 256.0), 256.0) / cs)), 1)
 
 	var bm = cave.call("get_Bitmap")
 	if bm == null: return _err("cave bitmap is null")
@@ -534,7 +650,8 @@ func _list_elements(req : Dictionary) -> Dictionary:
 	var kind = req.get("kind", "objects")
 	if not COLLECTIONS.has(kind):
 		return _err("unknown kind '%s' (one of: %s)" % [kind, COLLECTIONS.keys()])
-	var limit = int(req.get("limit", 200))
+	var limit = _i(req.get("limit", 200), 200)
+	if limit < 0: limit = 0
 	var out := []
 	# Wall-mounted portals (doors/windows) live inside each wall's `Portals`
 	# array, NOT in level.Portals — so listing "portals" must also walk the
@@ -553,6 +670,38 @@ func _list_elements(req : Dictionary) -> Dictionary:
 			break
 		out.append(_describe(node))
 	return _ok({ "kind": kind, "count": out.size(), "elements": out })
+
+
+# A3: dump the whole current level — every element across every collection — in
+# one round trip, as a point-in-time snapshot. Descriptors reuse get_element's
+# `_describe`, so shape-bearing kinds carry their real geometry (wall `points`/
+# `loop`, path `points`, roof `points`/`width`/`type`, pattern `points`). This
+# is what Part B's provider `Read`/import and backup/restore are built on.
+# Pattern shapes are not a direct child collection (level.PatternShapes holds
+# them via GetShapes()), and wall-mounted portals live inside walls, not
+# level.Portals — both are walked explicitly.
+func _dump_state(req : Dictionary) -> Dictionary:
+	var level = Global.World.GetCurrentLevel()
+	if level == null:
+		return _err("no map open")
+	var elements := []
+	for wall in level.Walls.get_children():
+		var wp = wall.get("Portals")
+		if wp == null:
+			continue
+		for portal in wp:
+			elements.append(_describe_wall_portal(portal, wall))
+	var shapes = level.PatternShapes
+	if shapes != null and shapes.has_method("GetShapes"):
+		for shape in shapes.GetShapes():
+			elements.append(_describe(shape))
+	for kind in COLLECTIONS:
+		var group = _collection(level, kind)
+		if group == null:
+			continue
+		for node in group.get_children():
+			elements.append(_describe(node))
+	return _ok({ "count": elements.size(), "elements": elements })
 
 
 # Describe a wall-mounted portal (a door/window living in a wall's Portals
@@ -629,14 +778,21 @@ func _place_object(req : Dictionary) -> Dictionary:
 	if level == null: return _err("no map open")
 	var tex = _asset_tex("Objects", req.get("asset", ""))
 	if tex == null: return _err("could not load object asset: " + str(req.get("asset")))
-	var prop = level.Objects.CreateObject(int(req.get("sorting", 0)))
+	var prop = level.Objects.CreateObject(_i(req.get("sorting", 0), 0))
 	prop.SetTexture(tex)
 	prop.position = _xy(req, Global.World.WoxelDimensions * 0.5)
-	var s = float(req.get("scale", 1.0))
+	var s = _num(req.get("scale", 1.0), 1.0)
 	prop.scale = Vector2(s, s)
-	prop.rotation = deg2rad(float(req.get("rotation", 0.0)))
+	prop.rotation = deg2rad(_num(req.get("rotation", 0.0), 0.0))
 	if req.has("color") and prop.has_method("SetCustomColor"):
 		prop.SetCustomColor(_color(req["color"], Color(1, 1, 1)))
+	# Objects' parent chain is all z_as_relative=true and sums to an effective
+	# z of 0, but a pattern floor that predates place_pattern's absolute-z fix
+	# (or was laid by hand in the DD UI) sits in "Layer 100" at effective z 100
+	# — so objects rendered UNDERNEATH their own room's floor. Give objects an
+	# absolute z above that and below roofs (800).
+	prop.z_as_relative = false
+	prop.z_index = _i(req.get("z", 200), 200)
 	return _ok({ "id": _id(prop), "position": _vec(prop.position) })
 
 
@@ -646,12 +802,21 @@ func _draw_wall(req : Dictionary) -> Dictionary:
 	var pts = _points(req.get("points", []))
 	if pts.size() < 2: return _err("'points' needs >= 2 [x,y] pairs")
 	var tex = _asset_tex("Walls", req.get("asset", ""))
+	var wall_type = _i(req.get("type", 0), 0)
+	if wall_type < 0 or wall_type > 2:
+		return _err("'type' must be 0 (auto), 1 (manual) or 2 (cave)")
+	var joint = _i(req.get("joint", 1), 1)
+	if joint < 0 or joint > 2:
+		return _err("'joint' must be 0 (sharp), 1 (bevel) or 2 (round)")
 	var wall = level.Walls.AddWall(
 		pts, tex, _wall_color(req, tex),
 		bool(req.get("loop", false)), bool(req.get("shadow", true)),
-		int(req.get("type", 0)), int(req.get("joint", 1)), true)
+		wall_type, joint, true)
 	if wall == null: return _err("AddWall returned null (bad asset/points?)")
-	return _ok({ "id": _id(wall), "point_count": pts.size() })
+	return _ok({
+		"id": _id(wall), "points": _points_list(pts),
+		"loop": bool(req.get("loop", false)),
+	})
 
 
 # Wall tint: use the caller's `color` if given, else the texture's own default
@@ -676,28 +841,40 @@ func _draw_path(req : Dictionary) -> Dictionary:
 	if pts.size() < 2: return _err("'points' needs >= 2 [x,y] pairs")
 	var tex = _asset_tex("Paths", req.get("asset", ""))
 	if tex == null: return _err("could not load path asset: " + str(req.get("asset")))
+	var layer = _i(req.get("layer", 0), 0)
+	if layer < 0: return _err("'layer' must be >= 0")
 	var path = level.Pathways.CreatePath(
-		tex, int(req.get("layer", 0)), int(req.get("sorting", 0)),
+		tex, layer, _i(req.get("sorting", 0), 0),
 		bool(req.get("fade_in", false)), bool(req.get("fade_out", false)),
 		bool(req.get("grow", false)), bool(req.get("shrink", false)))
+	# DD's Pathways.Save() reads this meta unguarded (no try/catch, unlike
+	# Objects.Save()); CreatePath() never sets it, only Load() does. A path
+	# lacking it makes GetMeta("preview") return null, and unboxing that to
+	# bool throws on DD's save thread -- silently, forever hanging the save.
+	path.set_meta("preview", false)
 	path.SetEditPoints(pts)
 	if req.has("smoothness"):
-		path.Smoothness = float(req["smoothness"])
+		path.Smoothness = max(_num(req["smoothness"], 0.0), 0.0)
 		path.Smooth()
 	if req.has("width"):
-		path.SetWidthScale(float(req["width"]))
+		var pw = _num(req["width"], 1.0)
+		if pw <= 0.0: return _err("'width' must be > 0")
+		path.SetWidthScale(pw)
 	path.UpdateGradient()
-	return _ok({ "id": _id(path), "point_count": pts.size() })
+	return _ok({ "id": _id(path), "points": _points_list(pts) })
 
 
 func _add_light(req : Dictionary) -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null: return _err("no map open")
 	var light = level.Lights.CreateLight(false)
+	# Same DD save hazard as paths (see _draw_path): Lights.Save() reads this
+	# meta unguarded, and CreateLight() never sets it -- only Load() does.
+	light.set_meta("preview", false)
 	light.position = _xy(req, Global.World.WoxelDimensions * 0.5)
 	light.color = _color(req.get("color", ""), Color(1, 0.9, 0.7))
-	light.energy = float(req.get("energy", 1.0))
-	light.texture_scale = float(req.get("range", 1.0))
+	light.energy = max(_num(req.get("energy", 1.0), 1.0), 0.0)
+	light.texture_scale = max(_num(req.get("range", 1.0), 1.0), 0.01)
 	light.shadow_enabled = bool(req.get("shadows", true))
 	var tex = _asset_tex("Lights", req.get("asset", ""))
 	if tex != null:
@@ -705,7 +882,7 @@ func _add_light(req : Dictionary) -> Dictionary:
 	return _ok({ "id": _id(light), "position": _vec(light.position) })
 
 
-# Find the wall segment nearest to `pos`. Returns
+# Nearest wall segment to `pos`, across ALL walls. Returns
 # { wall, point_index, closest, direction, distance } or null if no walls.
 # A wall is a polyline of `Points`; segment i goes Points[i] -> Points[i+1]
 # (plus the closing segment when Loop). We pick the segment whose nearest
@@ -713,25 +890,36 @@ func _add_light(req : Dictionary) -> Dictionary:
 func _nearest_wall_segment(level, pos : Vector2):
 	var best = null
 	for wall in level.Walls.get_children():
-		var pts = wall.get("Points")
-		if pts == null or pts.size() < 2:
-			continue
-		var seg_count = pts.size() - 1
-		if wall.get("Loop"):
-			seg_count = pts.size()
-		for i in range(seg_count):
-			var a = pts[i]
-			var b = pts[(i + 1) % pts.size()]
-			var closest = _closest_point_on_segment(pos, a, b)
-			var dist = pos.distance_to(closest)
-			if best == null or dist < best.distance:
-				var dir = (b - a)
-				if dir.length() > 0.001:
-					dir = dir.normalized()
-				best = {
-					"wall": wall, "point_index": i, "closest": closest,
-					"direction": dir, "distance": dist,
-				}
+		var seg = _wall_segment_nearest(wall, pos)
+		if seg != null and (best == null or seg.distance < best.distance):
+			best = seg
+	return best
+
+
+# Nearest segment on ONE wall (same scoring as _nearest_wall_segment, scoped
+# so an explicit `wall_id` can mount on a specific wall deterministically
+# without a map-wide nearest-wall search).
+func _wall_segment_nearest(wall, pos : Vector2):
+	var pts = wall.get("Points")
+	if pts == null or pts.size() < 2:
+		return null
+	var seg_count = pts.size() - 1
+	if wall.get("Loop"):
+		seg_count = pts.size()
+	var best = null
+	for i in range(seg_count):
+		var a = pts[i]
+		var b = pts[(i + 1) % pts.size()]
+		var closest = _closest_point_on_segment(pos, a, b)
+		var dist = pos.distance_to(closest)
+		if best == null or dist < best.distance:
+			var dir = (b - a)
+			if dir.length() > 0.001:
+				dir = dir.normalized()
+			best = {
+				"wall": wall, "point_index": i, "closest": closest,
+				"direction": dir, "distance": dist,
+			}
 	return best
 
 
@@ -751,15 +939,33 @@ func _add_portal(req : Dictionary) -> Dictionary:
 	if tex == null: return _err("could not load portal asset: " + str(req.get("asset")))
 	var pos = _xy(req, Global.World.WoxelDimensions * 0.5)
 	var closed = bool(req.get("closed", false))
-	var radius = float(req.get("radius", 64.0))
+	var radius = _num(req.get("radius", 64.0), 64.0)
+	if radius <= 0.0: return _err("'radius' must be > 0")
 	# mount: "wall" (default) snaps onto the nearest wall and cuts a gap;
 	# "free" forces a freestanding portal. snap_max caps how far (woxels) a
 	# wall may be and still capture the portal.
 	var mount = str(req.get("mount", "wall"))
-	var snap_max = float(req.get("snap_max", 256.0))
+	var snap_max = _num(req.get("snap_max", 256.0), 256.0)
+	if snap_max < 0.0: snap_max = 0.0
+	# A4: an explicit `wall_id` mounts deterministically on that wall (its
+	# nearest segment to `pos`), skipping the map-wide distance search — the
+	# nearest wall can silently change as other geometry shifts, which a
+	# declarative tool can't tolerate. Errors if the id isn't a wall.
+	var wall = null
+	if req.has("wall_id"):
+		wall = Global.World.GetNodeByID(_i(req["wall_id"], -1))
+		if wall == null:
+			return _err("no wall with id " + str(req.get("wall_id")))
+		var stool = Global.Editor.Tools["SelectTool"]
+		if stool.GetSelectableType(wall) != 1:
+			return _err("id %s is not a wall" % str(req.get("wall_id")))
 	if mount != "free":
-		var seg = _nearest_wall_segment(level, pos)
-		if seg != null and seg.distance <= snap_max:
+		var seg = null
+		if wall != null:
+			seg = _wall_segment_nearest(wall, pos)
+		else:
+			seg = _nearest_wall_segment(level, pos)
+		if seg != null and (wall != null or seg.distance <= snap_max):
 			# Mount onto the wall: snap to the segment, face along it, and let
 			# the wall remake its lines so the portal cuts a gap.
 			var flip = bool(req.get("flip", false))
@@ -773,11 +979,11 @@ func _add_portal(req : Dictionary) -> Dictionary:
 				"position": _vec(seg.closest), "wall_id": _id(seg.wall),
 				"snapped": _vec(seg.closest), "snap_distance": seg.distance,
 			})
-		if mount == "wall" and not req.get("fallback_free", true):
+		if wall == null and mount == "wall" and not req.get("fallback_free", true):
 			return _err("no wall within snap_max (%d) of portal position" % int(snap_max))
 	# Freestanding fallback (no wall nearby, or mount == "free").
 	level.CreateFreestandingPortal(
-		tex, pos, closed, radius, deg2rad(float(req.get("rotation", 0.0))))
+		tex, pos, closed, radius, deg2rad(_num(req.get("rotation", 0.0), 0.0)))
 	# CreateFreestandingPortal returns void; the new portal is the last child.
 	var kids = level.Portals.get_children()
 	if kids.empty(): return _err("portal was not created")
@@ -804,10 +1010,19 @@ func _add_roof(req : Dictionary) -> Dictionary:
 	if pts.size() < 2: return _err("'points' needs >= 2 [x,y] ridge points")
 	var tex = _asset_tex("Roofs", req.get("asset", ""))
 	if tex == null: return _err("could not load roof asset: " + str(req.get("asset")))
-	var roof = level.Roofs.CreateRoof(int(req.get("sorting", 0)))
-	roof.Set(pts, float(req.get("width", 256.0)), int(req.get("type", 0)))  # type: 0 gable,1 hip,2 dormer
+	var roof_type = _i(req.get("type", 0), 0)
+	if roof_type < 0 or roof_type > 2:
+		return _err("'type' must be 0 (gable), 1 (hip) or 2 (dormer)")
+	var width = _num(req.get("width", 256.0), 256.0)
+	if width <= 0.0: return _err("'width' must be > 0")
+	var roof = level.Roofs.CreateRoof(_i(req.get("sorting", 0), 0))
+	roof.Set(pts, width, roof_type)  # type: 0 gable, 1 hip, 2 dormer
 	roof.SetTileTexture(tex)
-	return _ok({ "id": _id(roof), "ridge_points": pts.size() })
+	return _ok({
+		"id": _id(roof), "points": _points_list(pts),
+		"width": width,
+		"type": roof_type,
+	})
 
 
 # Place a tiled floor/pattern shape (the "Floor" / Pattern Shape Tool in the UI).
@@ -851,7 +1066,7 @@ func _place_pattern(req : Dictionary) -> Dictionary:
 	if color.a < 0.05:  # guard: never paint an invisible floor
 		color = Color(color.r, color.g, color.b, 1.0)
 	tool.Color = color  # always set, so we don't inherit/leave leaked state
-	var rotation = float(req.get("rotation", 0.0))
+	var rotation = _num(req.get("rotation", 0.0), 0.0)
 	if tool.get("Rotation") != null:
 		tool.Rotation.value = rotation
 
@@ -861,7 +1076,7 @@ func _place_pattern(req : Dictionary) -> Dictionary:
 		var r = req["rect"]
 		if typeof(r) != TYPE_ARRAY or r.size() < 4:
 			return _err("'rect' must be [x, y, w, h]")
-		shapes.DrawRect(Rect2(float(r[0]), float(r[1]), float(r[2]), float(r[3])), false)
+		shapes.DrawRect(Rect2(_num(r[0], 0.0), _num(r[1], 0.0), _num(r[2], 0.0), _num(r[3], 0.0)), false)
 		kind = "rect"
 	elif req.has("points"):
 		var pts = _points(req["points"])
@@ -882,6 +1097,14 @@ func _place_pattern(req : Dictionary) -> Dictionary:
 	# and z_index=`z` (default -100, between FloorShapes at -200 and Objects at 0).
 	var all = shapes.GetShapes()
 	var result := { "shape": kind, "category": category, "shape_count": all.size() }
+	# Echo the drawn outline so the floor is readable from its create response:
+	# a polygon's corners as given, or a rect's four corners.
+	if kind == "rect":
+		var r = req["rect"]
+		var rx = _num(r[0], 0.0); var ry = _num(r[1], 0.0); var rw = _num(r[2], 0.0); var rh = _num(r[3], 0.0)
+		result["points"] = [[rx, ry], [rx + rw, ry], [rx + rw, ry + rh], [rx, ry + rh]]
+	else:
+		result["points"] = _points_list(_points(req["points"]))
 	if color is Color:
 		result["color"] = "#" + color.to_html(true)
 	if used_default:
@@ -893,7 +1116,7 @@ func _place_pattern(req : Dictionary) -> Dictionary:
 		if shape.has_method("SetOptions"):
 			shape.SetOptions(tex, color, rotation)
 		shape.z_as_relative = false
-		shape.z_index = int(req.get("z", -100))
+		shape.z_index = _i(req.get("z", -100), -100)
 		result["id"] = _id(shape)
 		result["z_index"] = shape.z_index
 	return _ok(result)
@@ -916,12 +1139,16 @@ func _build_room(req : Dictionary) -> Dictionary:
 		var r = req["rect"]
 		if typeof(r) != TYPE_ARRAY or r.size() < 4:
 			return _err("'rect' must be [x, y, w, h]")
-		var x = float(r[0]); var y = float(r[1]); var w = float(r[2]); var h = float(r[3])
+		var x = _num(r[0], 0.0); var y = _num(r[1], 0.0)
+		var w = _num(r[2], 0.0); var h = _num(r[3], 0.0)
 		pts_raw = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
 	elif req.has("points"):
-		if typeof(req["points"]) != TYPE_ARRAY or req["points"].size() < 3:
+		# Clean through _points so malformed entries can't crash _fill_region /
+		# _place_pattern below (GDScript has no try/catch).
+		var cleaned = _points(req["points"])
+		if cleaned.size() < 3:
 			return _err("'points' needs >= 3 [x,y] pairs")
-		pts_raw = req["points"]
+		pts_raw = _points_list(cleaned)
 	else:
 		return _err("provide 'rect':[x,y,w,h] or 'points':[[x,y]...]")
 
@@ -956,7 +1183,7 @@ func _build_room(req : Dictionary) -> Dictionary:
 			result["floor_error"] = fres.get("error")
 	elif floor_kind == "terrain":
 		var tr := {
-			"points": pts_raw, "slot": int(req.get("floor_slot", 1)),
+			"points": pts_raw, "slot": _i(req.get("floor_slot", 1), 1),
 		}
 		if req.has("floor_asset") and str(req.get("floor_asset", "")) != "":
 			tr["asset"] = req["floor_asset"]
@@ -988,7 +1215,7 @@ func _add_text(req : Dictionary) -> Dictionary:
 	# repaint, then restore the tool so the user's UI state is unchanged.
 	# A fresh Text reports fontSize 0 until repainted, so default to 32 (DD's
 	# standard) rather than the node's pre-paint value when no size is given.
-	var size = int(req.get("size", 32))
+	var size = _i(req.get("size", 32), 32)
 	if size <= 0:
 		size = 32
 	var col = _color(req.get("color", ""), Color(0, 0, 0, 1))
@@ -1018,12 +1245,23 @@ func _add_text(req : Dictionary) -> Dictionary:
 # Terrain
 # ---------------------------------------------------------------------------
 
+# Read + validate a terrain slot index (DD exposes exactly 8: 0..7). Returns
+# the slot, or -1 when out of range so the caller can _err instead of writing
+# to a nonexistent splat channel (which would corrupt another slot's weights).
+func _terrain_slot(req : Dictionary, default : int) -> int:
+	var slot = _i(req.get("slot", default), default)
+	if slot < 0 or slot > 7:
+		return -1
+	return slot
+
+
 func _set_terrain_slot(req : Dictionary) -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null: return _err("no map open")
 	var tex = _asset_tex("Terrain", req.get("asset", ""))
 	if tex == null: return _err("could not load terrain asset: " + str(req.get("asset")))
-	var slot = int(req.get("slot", 0))
+	var slot = _terrain_slot(req, 0)
+	if slot < 0: return _err("'slot' must be in 0..7")
 	level.Terrain.SetTexture(tex, slot)
 	level.Terrain.UpdateSplat()
 	return _ok({ "slot": slot })
@@ -1032,7 +1270,8 @@ func _set_terrain_slot(req : Dictionary) -> Dictionary:
 func _fill_terrain(req : Dictionary) -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null: return _err("no map open")
-	var slot = int(req.get("slot", 0))
+	var slot = _terrain_slot(req, 0)
+	if slot < 0: return _err("'slot' must be in 0..7")
 	if req.has("asset"):
 		var tex = _asset_tex("Terrain", req["asset"])
 		if tex == null: return _err("could not load terrain asset: " + str(req["asset"]))
@@ -1049,9 +1288,11 @@ func _fill_terrain(req : Dictionary) -> Dictionary:
 func _paint_terrain(req : Dictionary) -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null: return _err("no map open")
-	var slot = int(req.get("slot", 0))
-	var radius = float(req.get("radius", 64.0))
-	var rate = clamp(float(req.get("rate", 1.0)), 0.0, 1.0)
+	var slot = _terrain_slot(req, 0)
+	if slot < 0: return _err("'slot' must be in 0..7")
+	var radius = _num(req.get("radius", 64.0), 64.0)
+	if radius <= 0.0: return _err("'radius' must be > 0")
+	var rate = clamp(_num(req.get("rate", 1.0), 1.0), 0.0, 1.0)
 	if req.has("asset"):
 		var tex = _asset_tex("Terrain", req["asset"])
 		if tex == null: return _err("could not load terrain asset: " + str(req["asset"]))
@@ -1063,7 +1304,7 @@ func _paint_terrain(req : Dictionary) -> Dictionary:
 	var tscale = float(level.Terrain.width) / max(Global.World.WoxelDimensions.x, 1.0)
 	var trad = max(radius * tscale, 0.5)
 
-	var sp = _open_splat(level, slot)
+	var sp = _open_splat(level.Terrain, slot)
 	if sp == null: return _err("could not read splat image for slot " + str(slot))
 	var img = sp.img
 	var ch = sp.ch
@@ -1089,7 +1330,7 @@ func _paint_terrain(req : Dictionary) -> Dictionary:
 			img.set_pixel(ix, iy, _splat_set_channel(img.get_pixel(ix, iy), ch, w))
 			painted += 1
 	img.unlock()
-	_close_splat(level, sp.which, img)
+	_close_splat(level.Terrain, sp.which, img)
 	return _ok({ "painted_slot": slot, "pixels": painted })
 
 
@@ -1102,13 +1343,15 @@ func _paint_terrain(req : Dictionary) -> Dictionary:
 func _paint_path(req : Dictionary) -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null: return _err("no map open")
-	var slot = int(req.get("slot", 0))
-	var radius = float(req.get("radius", 96.0))
-	var rate = clamp(float(req.get("rate", 1.0)), 0.0, 1.0)
+	var slot = _terrain_slot(req, 0)
+	if slot < 0: return _err("'slot' must be in 0..7")
+	var radius = _num(req.get("radius", 96.0), 96.0)
+	if radius <= 0.0: return _err("'radius' must be > 0")
+	var rate = clamp(_num(req.get("rate", 1.0), 1.0), 0.0, 1.0)
 	if not req.has("points"):
 		return _err("provide 'points':[[x,y]...] (>= 2 points)")
-	var pts = req["points"]
-	if typeof(pts) != TYPE_ARRAY or pts.size() < 2:
+	var pts = _points(req["points"])
+	if pts.size() < 2:
 		return _err("'points' needs >= 2 [x,y] pairs for a path")
 	if req.has("asset"):
 		var tex = _asset_tex("Terrain", req["asset"])
@@ -1123,12 +1366,12 @@ func _paint_path(req : Dictionary) -> Dictionary:
 	var mn = Vector2(INF, INF)
 	var mx = Vector2(-INF, -INF)
 	for p in pts:
-		var tp = level.Terrain.WorldToTexture(Vector2(float(p[0]), float(p[1])))
+		var tp = level.Terrain.WorldToTexture(p)
 		tpts.append(tp)
 		mn.x = min(mn.x, tp.x); mn.y = min(mn.y, tp.y)
 		mx.x = max(mx.x, tp.x); mx.y = max(mx.y, tp.y)
 
-	var sp = _open_splat(level, slot)
+	var sp = _open_splat(level.Terrain, slot)
 	if sp == null: return _err("could not read splat image for slot " + str(slot))
 	var img = sp.img
 	var ch = sp.ch
@@ -1163,7 +1406,7 @@ func _paint_path(req : Dictionary) -> Dictionary:
 			img.set_pixel(ix, iy, _splat_set_channel(img.get_pixel(ix, iy), ch, w))
 			painted += 1
 	img.unlock()
-	_close_splat(level, sp.which, img)
+	_close_splat(level.Terrain, sp.which, img)
 	return _ok({ "painted_slot": slot, "segments": tpts.size() - 1, "pixels": painted })
 
 
@@ -1185,24 +1428,28 @@ func _dist_point_segment(p : Vector2, a : Vector2, b : Vector2) -> float:
 func _fill_region(req : Dictionary) -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null: return _err("no map open")
-	var slot = int(req.get("slot", 0))
-	var rate = float(req.get("rate", 1.0))
+	var slot = _terrain_slot(req, 0)
+	if slot < 0: return _err("'slot' must be in 0..7")
+	var rate = _num(req.get("rate", 1.0), 1.0)
 	if req.has("asset"):
 		var tex = _asset_tex("Terrain", req["asset"])
 		if tex == null: return _err("could not load terrain asset: " + str(req["asset"]))
 		level.Terrain.SetTexture(tex, slot)
 
-	# Gather the shape's world-space polygon (rect -> 4 corners).
+	# Gather the shape's world-space polygon (rect -> 4 corners). Malformed
+	# points entries are filtered by _points, so a bad polygon degrades to a
+	# clean _err instead of crashing the bridge.
 	var poly := []
 	if req.has("rect"):
 		var r = req["rect"]
 		if typeof(r) != TYPE_ARRAY or r.size() < 4:
 			return _err("'rect' must be [x, y, w, h]")
-		var x = float(r[0]); var y = float(r[1]); var w = float(r[2]); var h = float(r[3])
+		var x = _num(r[0], 0.0); var y = _num(r[1], 0.0)
+		var w = _num(r[2], 0.0); var h = _num(r[3], 0.0)
 		poly = [Vector2(x, y), Vector2(x + w, y), Vector2(x + w, y + h), Vector2(x, y + h)]
 	elif req.has("points"):
-		for p in req["points"]:
-			poly.append(Vector2(float(p[0]), float(p[1])))
+		for p in _points(req["points"]):
+			poly.append(p)
 		if poly.size() < 3:
 			return _err("'points' needs >= 3 [x,y] pairs for a polygon")
 	else:
@@ -1230,7 +1477,7 @@ func _fill_region(req : Dictionary) -> Dictionary:
 	for tp in tpoly:
 		local.append(tp - origin)
 	rate = clamp(rate, 0.0, 1.0)
-	var sp = _open_splat(level, slot)
+	var sp = _open_splat(level.Terrain, slot)
 	if sp == null: return _err("could not read splat image for slot " + str(slot))
 	var img = sp.img
 	var iw = img.get_width()
@@ -1250,7 +1497,7 @@ func _fill_region(req : Dictionary) -> Dictionary:
 			img.set_pixel(ix, iy, _splat_set_channel(img.get_pixel(ix, iy), sp.ch, rate))
 			painted += 1
 	img.unlock()
-	_close_splat(level, sp.which, img)
+	_close_splat(level.Terrain, sp.which, img)
 
 	return _ok({
 		"filled_slot": slot, "shape": ("rect" if req.has("rect") else "polygon"),
@@ -1259,24 +1506,62 @@ func _fill_region(req : Dictionary) -> Dictionary:
 	})
 
 
+# Single inline function, not a second .gd file (Dungeondraft's C#
+# ModManager scans and tries to load every .gd file under a mod's folder
+# tree, not just scripts/tools/ -- confirmed live via a DD console crash;
+# see mod_tests/ at the repo root for the unit-tested, hand-synced copy of
+# this logic, which has to live outside the mod's own directory entirely).
+#
 # Clone the splat weight image holding `slot` for direct editing. Returns
 # { img, ch, which } where ch is the RGBA channel (0..3) for that slot and
-# which is 0 (slots 0-3 -> splatImage) or 1 (slots 4-7 -> splatImage2), or null
-# if the image isn't available. Pair with _close_splat to push edits back.
-func _open_splat(level, slot : int):
+# which is 0 (slots 0-3 -> splatImage) or 1 (slots 4-7 -> splatImage2), or
+# null if the image isn't available. Pair with _close_splat to push edits
+# back.
+#
+# Root-caused by tracing Dungeondraft's terrain behaviour:
+# splatImage2 is only ever created by
+# ExpandSlots(true) (gated behind the level's own ExpandedSlots flag,
+# false until something turns 8-slot terrain on for that level), and it
+# swaps the render shader from Terrain.shader to Terrain2.shader to match
+# -- checked that shader pair too: Terrain2's blend() is a direct 8-way
+# generalization of Terrain's 4-way one, reducing to an identical result
+# when splat2 is all-zero, so calling this is not a visual change for
+# already-painted slots 0-3. Two earlier attempts got this wrong: neither
+# hand-rolling a blank Image + RestoreSplat2(blank) (wrong arity --
+# RestoreSplat2 takes TWO images, splat AND splat2, and CopyFroms into an
+# existing splatImage2 rather than replacing the reference; CloneSplatImage2
+# itself throws NullReferenceException -- not a graceful null -- when
+# splatImage2 is still unset, confirmed via DD's own console output) nor
+# calling Fill() on an unexpanded level (which silently reinterprets the
+# slot index against the PRIMARY image instead -- confirmed live, it
+# overwrote slot 1's data on a test map) actually allocates it.
+# ExpandSlots(true) is idempotent (only creates splatImage2 "if
+# (splatImage2 == null)"), so calling it on every slot 4-7 request is
+# safe/cheap once it's already been done. Confirmed live (2026-09-02): all
+# of slots 5/6/7 paint successfully on a fresh map with none previously
+# expanded, slot 5 stays paintable on a second call, and slot 1 (0-3 path)
+# is unaffected -- no shader/regression change for already-painted slots.
+func _open_splat(terrain, slot : int):
 	var which = 0 if slot < 4 else 1
-	var img = level.Terrain.CloneSplatImage() if which == 0 else level.Terrain.CloneSplatImage2()
+	if which == 1:
+		terrain.ExpandSlots(true)
+	var img = terrain.CloneSplatImage() if which == 0 else terrain.CloneSplatImage2()
 	if img == null:
 		return null
 	return { "img": img, "ch": slot % 4, "which": which }
 
 
-func _close_splat(level, which : int, img) -> void:
+# RestoreSplat2's real signature is (Image splat, Image splat2) -- it
+# restores BOTH halves together, not just splat2. Since
+# _open_splat only ever hands out a splat2 clone to edit, the first
+# argument here is a fresh, unmodified splatImage clone -- CopyFrom'd back
+# into itself, a no-op for that half.
+func _close_splat(terrain, which : int, img) -> void:
 	if which == 0:
-		level.Terrain.RestoreSplat(img)
+		terrain.RestoreSplat(img)
 	else:
-		level.Terrain.RestoreSplat2(img)
-	level.Terrain.UpdateSplat()
+		terrain.RestoreSplat2(terrain.CloneSplatImage(), img)
+	terrain.UpdateSplat()
 
 
 # Push channel `ch` (0=R,1=G,2=B,3=A) of an RGBA splat weight toward 1 by `rate`,
@@ -1330,9 +1615,9 @@ func _modify_object(req : Dictionary) -> Dictionary:
 	var node = _resolve(req)
 	if node == null: return _err("no element with id " + str(req.get("id")))
 	if req.has("scale"):
-		var s = float(req["scale"]); node.scale = Vector2(s, s)
+		var s = _num(req["scale"], 1.0); node.scale = Vector2(s, s)
 	if req.has("rotation"):
-		node.rotation = deg2rad(float(req["rotation"]))
+		node.rotation = deg2rad(_num(req["rotation"], 0.0))
 	if req.has("color") and node.has_method("SetCustomColor"):
 		node.SetCustomColor(_color(req["color"], Color(1, 1, 1)))
 	if req.has("shadow"):
@@ -1348,16 +1633,25 @@ func _duplicate_object(req : Dictionary) -> Dictionary:
 	if src.get("Texture") == null: return _err("element has no Texture to duplicate")
 	var prop = level.Objects.CreateObject(0)
 	prop.SetTexture(src.Texture)
-	prop.position = src.position + Vector2(float(req.get("dx", 64.0)), float(req.get("dy", 0.0)))
+	prop.position = src.position + Vector2(_num(req.get("dx", 64.0), 64.0), _num(req.get("dy", 0.0), 0.0))
 	prop.scale = src.scale
 	prop.rotation = src.rotation
+	# Absolute z like _place_object so the copy isn't swallowed by a legacy
+	# relative-z floor. Mirror the source's own override if it has one (it was
+	# placed post-fix); otherwise fall back to the same default.
+	if src.get("z_as_relative") == false and src.get("z_index") != null:
+		prop.z_as_relative = false
+		prop.z_index = int(src.get("z_index"))
+	else:
+		prop.z_as_relative = false
+		prop.z_index = _i(req.get("z", 200), 200)
 	return _ok({ "id": _id(prop), "position": _vec(prop.position) })
 
 
 func _delete_element(req : Dictionary) -> Dictionary:
 	var ident = req.get("id")
 	if ident == null: return _err("missing 'id'")
-	var ok = Global.World.DeleteNodeByID(int(ident))
+	var ok = Global.World.DeleteNodeByID(_i(ident, -1))
 	return _ok({ "deleted": ok, "id": ident })
 
 
@@ -1371,7 +1665,7 @@ func _add_level(req : Dictionary) -> Dictionary:
 
 
 func _set_level(req : Dictionary) -> Dictionary:
-	var idx = int(req.get("index", 0))
+	var idx = _i(req.get("index", 0), 0)
 	if idx < 0 or idx >= Global.World.levels.size():
 		return _err("level index out of range: " + str(idx))
 	Global.World.SetLevel(idx)
@@ -1382,11 +1676,14 @@ func _set_level(req : Dictionary) -> Dictionary:
 # Capture
 # ---------------------------------------------------------------------------
 
-# Grab the current window (what's on screen) to a PNG. Synchronous: the texture
-# holds the last drawn frame, so no yield is needed inside update().
+# Grab the current window (what's on screen) to a PNG. Synchronous: force a
+# fresh render pass first (the viewport texture otherwise holds the LAST drawn
+# frame, which goes stale while the window is minimized or occluded), then read
+# it — no yield needed inside update().
 func _screenshot(req : Dictionary) -> Dictionary:
 	var path = str(req.get("path", ""))
 	if path == "": return _err("missing 'path'")
+	VisualServer.force_draw()
 	var img = Global.World.get_viewport().get_texture().get_data()
 	if img == null: return _err("viewport capture returned null")
 	img.flip_y()  # viewport textures come back vertically flipped
@@ -1400,7 +1697,8 @@ func _screenshot(req : Dictionary) -> Dictionary:
 func _export_map(req : Dictionary) -> Dictionary:
 	var path = str(req.get("path", ""))
 	if path == "": return _err("missing 'path'")
-	var ppi = int(req.get("ppi", 40))
+	var ppi = _i(req.get("ppi", 40), 40)
+	if ppi <= 0: return _err("'ppi' must be > 0")
 	Global.Exporter.Start(0, ppi, path)  # mode 0 = PNG
 	return _ok({ "path": path, "ppi": ppi, "async": true })
 
@@ -1452,7 +1750,7 @@ func _set_camera(req : Dictionary) -> Dictionary:
 	if req.has("x") or req.has("y"):
 		cam.global_position = _xy(req, cam.global_position)
 	if req.has("zoom"):
-		_apply_zoom(cam, float(req["zoom"]))
+		_apply_zoom(cam, _num(req["zoom"], 1.0))
 	return _ok(_camera_state(cam))
 
 
@@ -1466,7 +1764,7 @@ func _focus_element(req : Dictionary) -> Dictionary:
 	if pos == null: return _err("element has no position to focus")
 	cam.global_position = pos
 	if req.has("zoom"):
-		_apply_zoom(cam, float(req["zoom"]))
+		_apply_zoom(cam, _num(req["zoom"], 1.0))
 	return _ok({ "id": req.get("id"), "focused": _vec(pos), "camera": _camera_state(cam) })
 
 
@@ -1479,12 +1777,14 @@ func _fit_elements(req : Dictionary) -> Dictionary:
 	var cam = _camera()
 	if cam == null: return _err("camera not available")
 	var ids = req.get("ids", [])
+	if typeof(ids) != TYPE_ARRAY:
+		return _err("'ids' must be an array")
 	var mn = Vector2(INF, INF)
 	var mx = Vector2(-INF, -INF)
 	var used := 0
 	var missing := []
 	for ident in ids:
-		var node = Global.World.GetNodeByID(int(ident))
+		var node = Global.World.GetNodeByID(_i(ident, -1))
 		var rect = null
 		if node != null:
 			rect = _element_rect(node)
@@ -1499,7 +1799,7 @@ func _fit_elements(req : Dictionary) -> Dictionary:
 	var center = (mn + mx) * 0.5
 	cam.global_position = center
 	# Zoom so the box fits: zoom (Camera2D) = world_span / viewport_span.
-	var pad = 1.0 + float(req.get("pad", 0.15))
+	var pad = 1.0 + _num(req.get("pad", 0.15), 0.15)
 	var raw = mx - mn
 	var vp = _viewport_size()
 	var z
@@ -1566,11 +1866,14 @@ func _element_rect(node):
 # ---------------------------------------------------------------------------
 
 func _select_elements(req : Dictionary) -> Dictionary:
+	var ids = req.get("ids", [])
+	if typeof(ids) != TYPE_ARRAY:
+		return _err("'ids' must be an array")
 	var stool = Global.Editor.Tools["SelectTool"]
 	stool.DeselectAll()
 	var n := 0
-	for ident in req.get("ids", []):
-		var node = Global.World.GetNodeByID(int(ident))
+	for ident in ids:
+		var node = Global.World.GetNodeByID(_i(ident, -1))
 		if node != null:
 			stool.SelectThing(node, true)
 			n += 1
@@ -1607,7 +1910,7 @@ func _id(node) -> int:
 func _resolve(req : Dictionary):
 	if not req.has("id"):
 		return null
-	return Global.World.GetNodeByID(int(req["id"]))
+	return Global.World.GetNodeByID(_i(req["id"], -1))
 
 
 # A DD Text node extends LineEdit (a Control), so GetSelectableType doesn't
@@ -1652,6 +1955,44 @@ func _describe(node) -> Dictionary:
 	var tex_path = _texture_path(node, t)
 	if tex_path != "":
 		d["asset"] = tex_path
+	# Surface the actual geometry for shape-bearing kinds, using the member
+	# each DD class actually exposes (per the Modding API): Wall.Points (world),
+	# Pathway.GlobalEditPoints (world edit points), Roof.points/width/type, and
+	# PatternShape.GlobalPolygon (world). So a caller can Read a wall's shape
+	# instead of only an id + position.
+	if t in [1, 5, 7, 8]:
+		var pts := []
+		if t == 5:      # path
+			pts = _points_list(node.get("GlobalEditPoints"))
+		elif t == 7:    # pattern shape
+			pts = _points_list(node.get("GlobalPolygon"))
+		elif t == 8:    # roof (lowercase member!)
+			pts = _points_list(node.get("points"))
+		else:           # wall
+			pts = _points_list(node.get("Points"))
+		if pts.size() > 0:
+			d["points"] = pts
+		if t == 1:  # wall
+			var loop = node.get("Loop")
+			if loop != null:
+				d["loop"] = bool(loop)
+			var wtype = node.get("Type")
+			if wtype != null:
+				d["type"] = int(wtype)
+			var joint = node.get("Joint")
+			if joint != null:
+				d["joint"] = int(joint)
+		elif t == 5:  # path
+			var sm = node.get("Smoothness")
+			if sm != null:
+				d["smoothness"] = float(sm)
+		elif t == 8:  # roof
+			var w = node.get("width")
+			if w != null:
+				d["width"] = float(w)
+			var rtype = node.get("type")
+			if rtype != null:
+				d["type"] = int(rtype)
 	return d
 
 
@@ -1677,7 +2018,45 @@ func _asset_tex(category : String, asset):
 
 func _xy(req : Dictionary, fallback : Vector2) -> Vector2:
 	if req.has("x") and req.has("y"):
-		return Vector2(float(req["x"]), float(req["y"]))
+		return Vector2(_num(req["x"], fallback.x), _num(req["y"], fallback.y))
+	return fallback
+
+
+# Safe numeric coercion helpers (A5): GDScript has no try/catch, and int()/
+# float() THROW on Dictionary/Array/Node input — an unhandled error in a
+# handler kills the whole bridge. These never throw: numbers/strings coerce,
+# anything else falls back. Use them for every value read from a request.
+func _num(v, fallback : float) -> float:
+	var t = typeof(v)
+	if t == TYPE_INT or t == TYPE_REAL:
+		return float(v)
+	if t == TYPE_BOOL:
+		return 1.0 if v else 0.0
+	if t == TYPE_NIL:
+		return fallback
+	if t == TYPE_STRING:
+		var s = str(v).strip_edges()
+		if s == "":
+			return fallback
+		return float(s)
+	return fallback
+
+
+func _i(v, fallback : int) -> int:
+	var t = typeof(v)
+	if t == TYPE_INT:
+		return v
+	if t == TYPE_REAL:
+		return int(v)
+	if t == TYPE_BOOL:
+		return 1 if v else 0
+	if t == TYPE_NIL:
+		return fallback
+	if t == TYPE_STRING:
+		var s = str(v).strip_edges()
+		if s == "":
+			return fallback
+		return int(s)
 	return fallback
 
 
@@ -1691,8 +2070,26 @@ func _points(raw) -> PoolVector2Array:
 		return pts
 	for p in raw:
 		if typeof(p) == TYPE_ARRAY and p.size() >= 2:
-			pts.append(Vector2(float(p[0]), float(p[1])))
+			pts.append(Vector2(_num(p[0], 0.0), _num(p[1], 0.0)))
 	return pts
+
+
+# JSON-safe geometry: a PoolVector2Array (or Array of Vector2) -> [[x,y], ...].
+# Returns [] when the node exposes no usable outline, so callers can gate on
+# `size() > 0` rather than leaking nulls into descriptors.
+func _points_list(raw) -> Array:
+	if raw == null:
+		return []
+	var out := []
+	if raw is PoolVector2Array:
+		for p in raw:
+			out.append([p.x, p.y])
+		return out
+	if typeof(raw) == TYPE_ARRAY:
+		for p in raw:
+			if p is Vector2:
+				out.append([p.x, p.y])
+	return out
 
 
 # Accepts "#rrggbb" / "rrggbb" string, or [r,g,b] / [r,g,b,a] floats 0..1.
@@ -1702,8 +2099,8 @@ func _color(v, fallback : Color) -> Color:
 	if typeof(v) == TYPE_ARRAY and v.size() >= 3:
 		var a = 1.0
 		if v.size() >= 4:
-			a = float(v[3])
-		return Color(float(v[0]), float(v[1]), float(v[2]), a)
+			a = _num(v[3], 1.0)
+		return Color(_num(v[0], 1.0), _num(v[1], 1.0), _num(v[2], 1.0), a)
 	return fallback
 
 
@@ -1718,8 +2115,11 @@ func _err(msg) -> Dictionary:
 func _register_tool():
 	var icon = _ensure_icon()
 	var panel = Global.Editor.Toolset.CreateModTool(self, "Settings", "mcp_bridge", "MCP Bridge", icon)
-	panel.CreateLabel("Listening on")
-	panel.CreateLabel("%s:%d" % [HOST, PORT])
+	panel.CreateLabel("Bridge agent")
+	panel.CreateLabel("app %s:%d (protocol v%d)" % [HOST, PORT, PROTOCOL_VERSION])
+	var lbl = panel.CreateLabel("connecting...")
+	if lbl != null and lbl is Label:
+		_label = lbl
 
 
 func _ensure_icon() -> String:
@@ -1734,3 +2134,29 @@ func _ensure_icon() -> String:
 		img.fill(Color(0.18, 0.55, 0.95))
 		img.save_png(path)
 	return path
+
+
+# The mod's own semantic version (CHANGELOG.md's [X.Y.Z] headings), read
+# from mcp_bridge.ddmod's own "version" field rather than a second
+# hardcoded constant -- that field is also what Dungeondraft's own Mods
+# list UI displays, so this makes it the single source of truth instead of
+# a third place that can drift out of sync. Cached after the first read
+# (the file doesn't change while the mod is running). "0.0.0-unknown" on
+# any read/parse failure rather than erroring -- a wrong-looking version
+# string in a status response is far less disruptive than get_status
+# itself failing because of this.
+var _mod_version_cache := ""
+func _mod_version() -> String:
+	if _mod_version_cache != "":
+		return _mod_version_cache
+	var f = File.new()
+	var path = Global.Root + "mcp_bridge.ddmod"
+	if f.open(path, File.READ) != OK:
+		return "0.0.0-unknown"
+	var text = f.get_as_text()
+	f.close()
+	var parsed = JSON.parse(text)
+	if parsed.error != OK or typeof(parsed.result) != TYPE_DICTIONARY:
+		return "0.0.0-unknown"
+	_mod_version_cache = str(parsed.result.get("version", "0.0.0-unknown"))
+	return _mod_version_cache
