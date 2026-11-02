@@ -12,7 +12,7 @@ import (
 	"os"
 	"strconv"
 
-	"dungeondraft-mcp/provider/internal/bridge"
+	bridge "dungeondraft-mcp/bridgeclient"
 )
 
 func main() {

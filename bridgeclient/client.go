@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -53,6 +54,33 @@ type Client struct {
 	Port     int
 	Timeout  time.Duration // per-socket timeout for dial and reads
 	Attempts int           // transport retry count (>= 1)
+
+	// levelMu excludes level-targeted RunOnLevel calls from every other
+	// RunOnLevel call, targeted or not, while letting untargeted calls run
+	// fully concurrently with each other. set_level is bridge-side GLOBAL
+	// mutable state, addressed by index, and every create command implicitly
+	// targets whatever level is currently active — so a level-targeted call
+	// (list_levels + set_level + the actual create) must run with nothing
+	// else interleaved, or another call can land between its set_level and
+	// its own create and end up on the wrong level. bridge_app's own
+	// agentPump already serializes individual *commands* onto the single DD
+	// agent link (bridge_app/internal/core/bridge.go), but that doesn't make
+	// this client's 3-command sequence atomic — two different callers'
+	// sequences can still interleave inside that queue unless something on
+	// this side holds them together, and that includes an untargeted call:
+	// it's not exempt just because it doesn't care which level it's on.
+	//
+	// A plain sync.Mutex taken unconditionally (an earlier version of this)
+	// technically fixed the race but serialized every single create in the
+	// provider through one lock, all the time — including plans that never
+	// use level_id anywhere, which is the common case and shouldn't pay for
+	// this at all. RWMutex fixes that: a level-targeted call takes the
+	// exclusive Lock (blocks everything, correctly — it's the one actually
+	// mutating "current level"), an untargeted call takes the shared RLock
+	// (blocks only against an in-flight targeted call, runs fully
+	// concurrently with other untargeted calls otherwise — Terraform's
+	// default parallelism is unaffected when levels aren't in play).
+	levelMu sync.RWMutex
 }
 
 // New returns a client for host:port with the defaults bridge_client.py used.
@@ -95,6 +123,78 @@ func (c *Client) Request(ctx context.Context, cmd string, params map[string]any)
 		}
 	}
 	return nil, lastErr
+}
+
+// RunOnLevel resolves levelID (a level's `id`, as dungeondraft_level.x.id
+// reports — NOT the `index` set_level actually takes; add_level never
+// returns an index, only list_levels does, so this always re-resolves it
+// fresh rather than trusting a cached one) to its current index, switches
+// the bridge's active level, then runs fn — the whole sequence under
+// levelMu's exclusive Lock so no other RunOnLevel call, targeted or not,
+// can land in between. An empty levelID instead takes the shared RLock and
+// runs fn directly: it still needs to be excluded from a concurrent
+// targeted call, but not from other untargeted calls (see the field's doc
+// comment on Client for why this is RWMutex and not a plain Mutex).
+func (c *Client) RunOnLevel(ctx context.Context, levelID string, fn func() (map[string]any, error)) (map[string]any, error) {
+	if levelID == "" {
+		c.levelMu.RLock()
+		defer c.levelMu.RUnlock()
+		return fn()
+	}
+
+	c.levelMu.Lock()
+	defer c.levelMu.Unlock()
+
+	lv, err := c.Request(ctx, "list_levels", nil)
+	if err != nil {
+		return nil, fmt.Errorf("resolving level %s: %w", levelID, err)
+	}
+	levels, _ := lv["levels"].([]any)
+	index := int64(-1)
+	for _, raw := range levels {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if formatJSONNumber(m["id"]) == levelID {
+			index = jsonNumberAsInt64(m["index"])
+			break
+		}
+	}
+	if index < 0 {
+		return nil, &Error{Msg: fmt.Sprintf("no level with id %s (from list_levels)", levelID)}
+	}
+	if _, err := c.Request(ctx, "set_level", map[string]any{"index": index}); err != nil {
+		return nil, fmt.Errorf("set_level(%d) for level %s: %w", index, levelID, err)
+	}
+	return fn()
+}
+
+// jsonNumberAsInt64 coerces a JSON number (float64/int64/int from
+// encoding/json) to int64.
+func jsonNumberAsInt64(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	}
+	return 0
+}
+
+// formatJSONNumber renders a decoded JSON id — number or string — the same
+// way createNode/idAsString (ddprovider package) render one for a
+// resource's Terraform id, so a level_id attribute value compares equal to
+// what list_levels reports regardless of which JSON type the bridge sent
+// it as. Kept in sync with idAsString by hand (see this package's doc
+// comment: it's a deliberate vendored copy, not a shared import).
+func formatJSONNumber(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%d", jsonNumberAsInt64(v))
 }
 
 // roundTrip opens a fresh connection (the bridge reaps idle peers, so reuse

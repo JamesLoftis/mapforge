@@ -21,7 +21,7 @@ import (
 	"os"
 	"sort"
 
-	"dungeondraft-mcp/provider/internal/bridge"
+	bridge "dungeondraft-mcp/bridgeclient"
 )
 
 func main() {

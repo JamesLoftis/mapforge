@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"dungeondraft-mcp/provider/internal/bridge"
+	bridge "dungeondraft-mcp/bridgeclient"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"

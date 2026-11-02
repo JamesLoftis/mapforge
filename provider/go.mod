@@ -2,12 +2,15 @@ module dungeondraft-mcp/provider
 
 go 1.25.6
 
+replace dungeondraft-mcp/bridgeclient => ../bridgeclient
+
 require (
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
 )
 
 require (
+	dungeondraft-mcp/bridgeclient v0.0.0-00010101000000-000000000000
 	github.com/agext/levenshtein v1.2.1 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/fatih/color v1.18.0 // indirect
