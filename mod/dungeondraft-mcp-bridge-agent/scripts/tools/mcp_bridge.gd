@@ -221,6 +221,11 @@ func _record_and_dispatch(req : Dictionary) -> Dictionary:
 		if node != null:
 			pre = _snapshot(node)
 
+	# KNOWN GAP: only splatImage (slots 0-3) is snapshotted, never
+	# splatImage2 (slots 4-7) -- undo/redo of a slot 4-7 edit is therefore
+	# incomplete (it won't revert that half of the terrain data). Not fixed
+	# here: this pass is about slots 4-7 being paintable at all (see
+	# _open_splat/_init_splat2), a precondition for this gap mattering.
 	var terrain_before = null
 	if cmd in TERRAIN_CMDS:
 		var lvl = Global.World.GetCurrentLevel()
@@ -384,7 +389,7 @@ func _safe_dispatch(req : Dictionary) -> Dictionary:
 	var cmd = req.get("cmd", "")
 	match cmd:
 		# --- read / query ---
-		"ping": return _ok({ "pong": true, "protocol": PROTOCOL_VERSION, "engine": Engine.get_version_info() })
+		"ping": return _ok({ "pong": true, "protocol": PROTOCOL_VERSION, "mod_version": _mod_version(), "engine": Engine.get_version_info() })
 		"get_status": return _get_status()
 		"list_asset_categories": return _ok({ "categories": ASSET_CATEGORIES })
 		"list_assets": return _list_assets(req)
@@ -449,7 +454,7 @@ const ASSET_CATEGORIES := [
 func _get_status() -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null:
-		return _ok({ "map_open": false })
+		return _ok({ "map_open": false, "mod_version": _mod_version() })
 	var counts := {}
 	for kind in COLLECTIONS:
 		counts[kind] = _collection(level, kind).get_child_count()
@@ -459,6 +464,7 @@ func _get_status() -> Dictionary:
 	counts["portals"] += _wall_portal_count(level)
 	return _ok({
 		"map_open": true,
+		"mod_version": _mod_version(),
 		"level_id": Global.World.CurrentLevelId,
 		"level_count": Global.World.levels.size(),
 		"map_size_woxels": [Global.World.WoxelDimensions.x, Global.World.WoxelDimensions.y],
@@ -841,6 +847,11 @@ func _draw_path(req : Dictionary) -> Dictionary:
 		tex, layer, _i(req.get("sorting", 0), 0),
 		bool(req.get("fade_in", false)), bool(req.get("fade_out", false)),
 		bool(req.get("grow", false)), bool(req.get("shrink", false)))
+	# DD's Pathways.Save() reads this meta unguarded (no try/catch, unlike
+	# Objects.Save()); CreatePath() never sets it, only Load() does. A path
+	# lacking it makes GetMeta("preview") return null, and unboxing that to
+	# bool throws on DD's save thread -- silently, forever hanging the save.
+	path.set_meta("preview", false)
 	path.SetEditPoints(pts)
 	if req.has("smoothness"):
 		path.Smoothness = max(_num(req["smoothness"], 0.0), 0.0)
@@ -857,6 +868,9 @@ func _add_light(req : Dictionary) -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null: return _err("no map open")
 	var light = level.Lights.CreateLight(false)
+	# Same DD save hazard as paths (see _draw_path): Lights.Save() reads this
+	# meta unguarded, and CreateLight() never sets it -- only Load() does.
+	light.set_meta("preview", false)
 	light.position = _xy(req, Global.World.WoxelDimensions * 0.5)
 	light.color = _color(req.get("color", ""), Color(1, 0.9, 0.7))
 	light.energy = max(_num(req.get("energy", 1.0), 1.0), 0.0)
@@ -1290,7 +1304,7 @@ func _paint_terrain(req : Dictionary) -> Dictionary:
 	var tscale = float(level.Terrain.width) / max(Global.World.WoxelDimensions.x, 1.0)
 	var trad = max(radius * tscale, 0.5)
 
-	var sp = _open_splat(level, slot)
+	var sp = _open_splat(level.Terrain, slot)
 	if sp == null: return _err("could not read splat image for slot " + str(slot))
 	var img = sp.img
 	var ch = sp.ch
@@ -1316,7 +1330,7 @@ func _paint_terrain(req : Dictionary) -> Dictionary:
 			img.set_pixel(ix, iy, _splat_set_channel(img.get_pixel(ix, iy), ch, w))
 			painted += 1
 	img.unlock()
-	_close_splat(level, sp.which, img)
+	_close_splat(level.Terrain, sp.which, img)
 	return _ok({ "painted_slot": slot, "pixels": painted })
 
 
@@ -1357,7 +1371,7 @@ func _paint_path(req : Dictionary) -> Dictionary:
 		mn.x = min(mn.x, tp.x); mn.y = min(mn.y, tp.y)
 		mx.x = max(mx.x, tp.x); mx.y = max(mx.y, tp.y)
 
-	var sp = _open_splat(level, slot)
+	var sp = _open_splat(level.Terrain, slot)
 	if sp == null: return _err("could not read splat image for slot " + str(slot))
 	var img = sp.img
 	var ch = sp.ch
@@ -1392,7 +1406,7 @@ func _paint_path(req : Dictionary) -> Dictionary:
 			img.set_pixel(ix, iy, _splat_set_channel(img.get_pixel(ix, iy), ch, w))
 			painted += 1
 	img.unlock()
-	_close_splat(level, sp.which, img)
+	_close_splat(level.Terrain, sp.which, img)
 	return _ok({ "painted_slot": slot, "segments": tpts.size() - 1, "pixels": painted })
 
 
@@ -1463,7 +1477,7 @@ func _fill_region(req : Dictionary) -> Dictionary:
 	for tp in tpoly:
 		local.append(tp - origin)
 	rate = clamp(rate, 0.0, 1.0)
-	var sp = _open_splat(level, slot)
+	var sp = _open_splat(level.Terrain, slot)
 	if sp == null: return _err("could not read splat image for slot " + str(slot))
 	var img = sp.img
 	var iw = img.get_width()
@@ -1483,7 +1497,7 @@ func _fill_region(req : Dictionary) -> Dictionary:
 			img.set_pixel(ix, iy, _splat_set_channel(img.get_pixel(ix, iy), sp.ch, rate))
 			painted += 1
 	img.unlock()
-	_close_splat(level, sp.which, img)
+	_close_splat(level.Terrain, sp.which, img)
 
 	return _ok({
 		"filled_slot": slot, "shape": ("rect" if req.has("rect") else "polygon"),
@@ -1492,24 +1506,62 @@ func _fill_region(req : Dictionary) -> Dictionary:
 	})
 
 
+# Single inline function, not a second .gd file (Dungeondraft's C#
+# ModManager scans and tries to load every .gd file under a mod's folder
+# tree, not just scripts/tools/ -- confirmed live via a DD console crash;
+# see mod_tests/ at the repo root for the unit-tested, hand-synced copy of
+# this logic, which has to live outside the mod's own directory entirely).
+#
 # Clone the splat weight image holding `slot` for direct editing. Returns
 # { img, ch, which } where ch is the RGBA channel (0..3) for that slot and
-# which is 0 (slots 0-3 -> splatImage) or 1 (slots 4-7 -> splatImage2), or null
-# if the image isn't available. Pair with _close_splat to push edits back.
-func _open_splat(level, slot : int):
+# which is 0 (slots 0-3 -> splatImage) or 1 (slots 4-7 -> splatImage2), or
+# null if the image isn't available. Pair with _close_splat to push edits
+# back.
+#
+# Root-caused by tracing Dungeondraft's terrain behaviour:
+# splatImage2 is only ever created by
+# ExpandSlots(true) (gated behind the level's own ExpandedSlots flag,
+# false until something turns 8-slot terrain on for that level), and it
+# swaps the render shader from Terrain.shader to Terrain2.shader to match
+# -- checked that shader pair too: Terrain2's blend() is a direct 8-way
+# generalization of Terrain's 4-way one, reducing to an identical result
+# when splat2 is all-zero, so calling this is not a visual change for
+# already-painted slots 0-3. Two earlier attempts got this wrong: neither
+# hand-rolling a blank Image + RestoreSplat2(blank) (wrong arity --
+# RestoreSplat2 takes TWO images, splat AND splat2, and CopyFroms into an
+# existing splatImage2 rather than replacing the reference; CloneSplatImage2
+# itself throws NullReferenceException -- not a graceful null -- when
+# splatImage2 is still unset, confirmed via DD's own console output) nor
+# calling Fill() on an unexpanded level (which silently reinterprets the
+# slot index against the PRIMARY image instead -- confirmed live, it
+# overwrote slot 1's data on a test map) actually allocates it.
+# ExpandSlots(true) is idempotent (only creates splatImage2 "if
+# (splatImage2 == null)"), so calling it on every slot 4-7 request is
+# safe/cheap once it's already been done. Confirmed live (2026-09-02): all
+# of slots 5/6/7 paint successfully on a fresh map with none previously
+# expanded, slot 5 stays paintable on a second call, and slot 1 (0-3 path)
+# is unaffected -- no shader/regression change for already-painted slots.
+func _open_splat(terrain, slot : int):
 	var which = 0 if slot < 4 else 1
-	var img = level.Terrain.CloneSplatImage() if which == 0 else level.Terrain.CloneSplatImage2()
+	if which == 1:
+		terrain.ExpandSlots(true)
+	var img = terrain.CloneSplatImage() if which == 0 else terrain.CloneSplatImage2()
 	if img == null:
 		return null
 	return { "img": img, "ch": slot % 4, "which": which }
 
 
-func _close_splat(level, which : int, img) -> void:
+# RestoreSplat2's real signature is (Image splat, Image splat2) -- it
+# restores BOTH halves together, not just splat2. Since
+# _open_splat only ever hands out a splat2 clone to edit, the first
+# argument here is a fresh, unmodified splatImage clone -- CopyFrom'd back
+# into itself, a no-op for that half.
+func _close_splat(terrain, which : int, img) -> void:
 	if which == 0:
-		level.Terrain.RestoreSplat(img)
+		terrain.RestoreSplat(img)
 	else:
-		level.Terrain.RestoreSplat2(img)
-	level.Terrain.UpdateSplat()
+		terrain.RestoreSplat2(terrain.CloneSplatImage(), img)
+	terrain.UpdateSplat()
 
 
 # Push channel `ch` (0=R,1=G,2=B,3=A) of an RGBA splat weight toward 1 by `rate`,
@@ -2082,3 +2134,29 @@ func _ensure_icon() -> String:
 		img.fill(Color(0.18, 0.55, 0.95))
 		img.save_png(path)
 	return path
+
+
+# The mod's own semantic version (CHANGELOG.md's [X.Y.Z] headings), read
+# from mcp_bridge.ddmod's own "version" field rather than a second
+# hardcoded constant -- that field is also what Dungeondraft's own Mods
+# list UI displays, so this makes it the single source of truth instead of
+# a third place that can drift out of sync. Cached after the first read
+# (the file doesn't change while the mod is running). "0.0.0-unknown" on
+# any read/parse failure rather than erroring -- a wrong-looking version
+# string in a status response is far less disruptive than get_status
+# itself failing because of this.
+var _mod_version_cache := ""
+func _mod_version() -> String:
+	if _mod_version_cache != "":
+		return _mod_version_cache
+	var f = File.new()
+	var path = Global.Root + "mcp_bridge.ddmod"
+	if f.open(path, File.READ) != OK:
+		return "0.0.0-unknown"
+	var text = f.get_as_text()
+	f.close()
+	var parsed = JSON.parse(text)
+	if parsed.error != OK or typeof(parsed.result) != TYPE_DICTIONARY:
+		return "0.0.0-unknown"
+	_mod_version_cache = str(parsed.result.get("version", "0.0.0-unknown"))
+	return _mod_version_cache
