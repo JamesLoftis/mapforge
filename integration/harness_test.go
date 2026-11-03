@@ -43,15 +43,22 @@ func TestMain(m *testing.M) {
 
 // bridgePing is what the harness needs from bridge_app's own ping reply.
 type bridgePing struct {
-	Err         error
-	DDConnected bool
+	Err           error
+	DDConnected   bool
+	Protocol      int // bridge_app's
+	AgentProtocol int // the connected mod's
 }
 
 func readPreconditions(ctx context.Context) (bridgePing, bridge.MapStatus) {
 	res, err := dd.Request(ctx, "ping", nil)
-	ping := bridgePing{Err: err, DDConnected: res["dd_connected"] == true}
-	if !ping.isReady() {
-		return ping, bridge.MapStatus{}
+	ping := bridgePing{
+		Err:           err,
+		DDConnected:   res["dd_connected"] == true,
+		Protocol:      intField(res, "protocol"),
+		AgentProtocol: intField(res, "agent_protocol"),
+	}
+	if !ping.isReady() || ping.isStaleMod() {
+		return ping, bridge.MapStatus{} // a stale mod refuses get_status
 	}
 	status, err := dd.Status(ctx)
 	if err != nil {
@@ -62,6 +69,13 @@ func readPreconditions(ctx context.Context) (bridgePing, bridge.MapStatus) {
 
 func (p bridgePing) isReady() bool { return p.Err == nil && p.DDConnected }
 
+func (p bridgePing) isStaleMod() bool { return p.AgentProtocol != p.Protocol }
+
+func intField(m map[string]any, key string) int {
+	n, _ := m[key].(float64)
+	return int(n)
+}
+
 func checkPreconditions(ping bridgePing, status bridge.MapStatus) error {
 	switch {
 	case ping.Err != nil:
@@ -69,6 +83,9 @@ func checkPreconditions(ping bridgePing, status bridge.MapStatus) error {
 			bridgeHost, bridgePort, ping.Err)
 	case !ping.DDConnected:
 		return errors.New("Dungeondraft is not connected to bridge_app — is the TF Bridge Agent mod enabled?")
+	case ping.isStaleMod():
+		return fmt.Errorf("Dungeondraft's mod speaks protocol v%d, bridge_app v%d; restart Dungeondraft so it "+
+			"loads the current mod", ping.AgentProtocol, ping.Protocol)
 	case !status.MapOpen:
 		return nil
 	case status.MapFile == "" && status.Modified:

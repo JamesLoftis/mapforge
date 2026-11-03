@@ -16,6 +16,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,9 +33,15 @@ const CommandTimeout = 30 * time.Second
 
 // Error codes bridge_app itself answers with (PROTOCOL.md, Errors).
 const (
-	codeOffline = "offline"
-	codeTimeout = "timeout"
+	codeOffline          = "offline"
+	codeTimeout          = "timeout"
+	codeAgentLost        = "agent_lost"
+	codeProtocolMismatch = "protocol_mismatch"
 )
+
+// WriteTimeout bounds one reply write to a user, so a client that stops
+// reading cannot stall the single agent pump.
+const WriteTimeout = 5 * time.Second
 
 // errorReply is a failed answer carrying a machine-readable code.
 func errorReply(code, message string) map[string]any {
@@ -59,6 +66,9 @@ type Options struct {
 	// CommandTimeout bounds how long a forwarded user command may wait for
 	// the agent's reply. Zero means the package default (30s).
 	CommandTimeout time.Duration
+
+	// WriteTimeout bounds one reply write. Zero means the package default.
+	WriteTimeout time.Duration
 }
 
 // Stats is the aggregated command accounting surfaced by the admin API.
@@ -118,16 +128,27 @@ type wireConn struct {
 	lastCmd     string
 	lastCmdAt   time.Time
 	connectedAt time.Time
-	closed      bool
+	closed      atomic.Bool
+	gone        chan struct{} // closed once the connection is finished
+	goneOnce    sync.Once
+}
+
+// markClosed records that wc is finished and wakes anything waiting on it.
+// Safe to call more than once; reports whether wc was still open.
+func (wc *wireConn) markClosed() bool {
+	wasOpen := !wc.closed.Swap(true)
+	wc.goneOnce.Do(func() { close(wc.gone) })
+	return wasOpen
 }
 
 // Bridge is the wire-protocol server plus agent link.
 type Bridge struct {
-	opts       Options
-	cmdTimeout time.Duration
-	hbTimeout  time.Duration
-	jobs       chan job
-	startAt    time.Time
+	opts         Options
+	cmdTimeout   time.Duration
+	hbTimeout    time.Duration
+	writeTimeout time.Duration
+	jobs         chan job
+	startAt      time.Time
 
 	mu         sync.Mutex
 	conns      map[int64]*wireConn
@@ -147,13 +168,17 @@ func New(o Options) *Bridge {
 	if o.CommandTimeout == 0 {
 		o.CommandTimeout = CommandTimeout
 	}
+	if o.WriteTimeout == 0 {
+		o.WriteTimeout = WriteTimeout
+	}
 	return &Bridge{
-		opts:       o,
-		cmdTimeout: o.CommandTimeout,
-		hbTimeout:  o.AgentTimeout,
-		jobs:       make(chan job, 64),
-		conns:      map[int64]*wireConn{},
-		startAt:    time.Now(),
+		opts:         o,
+		cmdTimeout:   o.CommandTimeout,
+		hbTimeout:    o.AgentTimeout,
+		writeTimeout: o.WriteTimeout,
+		jobs:         make(chan job, 64),
+		conns:        map[int64]*wireConn{},
+		startAt:      time.Now(),
 	}
 }
 
@@ -203,7 +228,7 @@ func (b *Bridge) agentPump(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case jb := <-b.jobs:
-			if jb.conn.closed {
+			if jb.conn.closed.Load() {
 				continue // the user went away; nothing to answer
 			}
 			b.relay(ctx, jb)
@@ -213,10 +238,17 @@ func (b *Bridge) agentPump(ctx context.Context) {
 
 // relay forwards one user command to the agent and streams the reply back.
 func (b *Bridge) relay(ctx context.Context, jb job) {
-	agent := b.agentLive()
+	agent, proto := b.agentLive()
 	if agent == nil {
 		b.respond(jb.conn, offlineReply())
 		b.statsRejectOffline(jb.req)
+		return
+	}
+	if proto != PROTOCOL_VERSION {
+		b.respond(jb.conn, errorReply(codeProtocolMismatch, fmt.Sprintf(
+			"Dungeondraft's mod speaks protocol v%d, bridge_app v%d; restart Dungeondraft so it loads the current mod",
+			proto, PROTOCOL_VERSION)))
+		b.statsRecord(jb.req, nil)
 		return
 	}
 
@@ -243,6 +275,11 @@ func (b *Bridge) relay(ctx context.Context, jb job) {
 	case <-time.After(b.cmdTimeout):
 		b.dropAgent(agent, "no reply within "+b.cmdTimeout.String())
 		b.respond(jb.conn, errorReply(codeTimeout, "bridge timed out waiting for Dungeondraft"))
+		b.statsRecord(jb.req, nil)
+	case <-agent.gone:
+		b.respond(jb.conn, errorReply(codeAgentLost, fmt.Sprintf(
+			"Dungeondraft's bridge agent went away while running %s; it may or may not have run",
+			fstring(jb.req.parsed, "cmd"))))
 		b.statsRecord(jb.req, nil)
 	case <-ctx.Done():
 		return
@@ -275,8 +312,7 @@ func (b *Bridge) handleConn(ctx context.Context, nc net.Conn) {
 			continue
 		}
 		if cmd := fstring(fr.parsed, "cmd"); cmd != "" {
-			wc.lastCmd = cmd
-			wc.lastCmdAt = time.Now()
+			b.noteCommand(wc, cmd)
 		}
 		if stop := b.routeFrame(ctx, wc, fr); stop {
 			break
@@ -285,7 +321,7 @@ func (b *Bridge) handleConn(ctx context.Context, nc net.Conn) {
 	if err := sc.Err(); err != nil && !isClosedErr(err) {
 		b.logf("conn %d (%s): %v", wc.id, wc.role, err)
 	}
-	if wc.role == "agent" && !wc.closed {
+	if wc.role == "agent" && !wc.closed.Load() {
 		b.dropAgent(wc, "socket closed")
 	}
 }
@@ -312,11 +348,11 @@ func (b *Bridge) routeFrame(ctx context.Context, wc *wireConn, fr frame) bool {
 		// agent ignores the reply. Anything else is a reply to a forwarded
 		// user command, handed to the awaiting pump.
 		if fstring(fr.parsed, "cmd") == "ping" {
-			b.agentSeen = time.Now()
+			b.markAgentSeen()
 			b.respond(wc, map[string]any{"ok": true, "result": map[string]any{"pong": true}})
 			return false
 		}
-		b.agentSeen = time.Now()
+		b.markAgentSeen()
 		select {
 		case wc.respCh <- fr:
 		default:
@@ -334,14 +370,19 @@ func (b *Bridge) routeFrame(ctx context.Context, wc *wireConn, fr frame) bool {
 		b.mu.Lock()
 		b.stats.Pings++
 		connected := b.agentSeenLive()
+		agentProto := 0
+		if connected {
+			agentProto = b.agentProto
+		}
 		b.mu.Unlock()
 		b.respond(wc, map[string]any{
 			"ok": true,
 			"result": map[string]any{
-				"pong":         true,
-				"protocol":     PROTOCOL_VERSION,
-				"app":          "dungeondraft-bridge",
-				"dd_connected": connected,
+				"pong":           true,
+				"protocol":       PROTOCOL_VERSION,
+				"app":            "dungeondraft-bridge",
+				"dd_connected":   connected,
+				"agent_protocol": agentProto,
 			},
 		})
 		return false
@@ -364,6 +405,7 @@ func (b *Bridge) register(nc net.Conn) *wireConn {
 		role:        "user",
 		repo:        b,
 		respCh:      make(chan frame, 1),
+		gone:        make(chan struct{}),
 		connectedAt: time.Now(),
 	}
 	b.conns[wc.id] = wc
@@ -378,8 +420,7 @@ func (b *Bridge) unregister(wc *wireConn) {
 	if b.agent == wc {
 		b.agent = nil
 	}
-	wasOpen := !wc.closed
-	wc.closed = true
+	wasOpen := wc.markClosed()
 	b.mu.Unlock()
 	if wasOpen {
 		b.logf("connection %d (%s) disconnected", wc.id, wc.role)
@@ -397,7 +438,7 @@ func (b *Bridge) promoteAgent(wc *wireConn, proto int) {
 	b.agentAt = now
 	b.agentSeen = now
 	if old != nil && old != wc {
-		old.closed = true
+		old.markClosed()
 		old.conn.Close()
 		b.logf("agent connection %d superseded by %d", old.id, wc.id)
 	}
@@ -410,21 +451,36 @@ func (b *Bridge) dropAgent(agent *wireConn, reason string) {
 	if b.agent == agent {
 		b.agent = nil
 	}
-	agent.closed = true
+	agent.markClosed()
 	b.mu.Unlock()
 	b.logf("agent connection %d lost: %s", agent.id, reason)
 	agent.conn.Close()
 }
 
-// agentLive returns the agent wireConn if it is connected and still has a
-// recent heartbeat; otherwise nil.
-func (b *Bridge) agentLive() *wireConn {
+// agentLive returns the agent wireConn and its protocol if it is connected
+// and still has a recent heartbeat; otherwise nil.
+func (b *Bridge) agentLive() (*wireConn, int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.agent == nil || time.Since(b.agentSeen) > b.hbTimeout {
-		return nil
+		return nil, 0
 	}
-	return b.agent
+	return b.agent, b.agentProto
+}
+
+// markAgentSeen records a frame from the agent (heartbeat or reply).
+func (b *Bridge) markAgentSeen() {
+	b.mu.Lock()
+	b.agentSeen = time.Now()
+	b.mu.Unlock()
+}
+
+// noteCommand records wc's latest command for /connections.
+func (b *Bridge) noteCommand(wc *wireConn, cmd string) {
+	b.mu.Lock()
+	wc.lastCmd = cmd
+	wc.lastCmdAt = time.Now()
+	b.mu.Unlock()
 }
 
 // agentSeenLive reports only whether DD is currently reachable (for ping).
@@ -447,13 +503,23 @@ func (b *Bridge) respond(wc *wireConn, resp map[string]any) {
 func (b *Bridge) respondRaw(wc *wireConn, raw []byte) {
 	wc.rwmu.Lock()
 	defer wc.rwmu.Unlock()
+	// The deadline covers this reply only; left set, it would also fail the
+	// pump's later forwards on an agent socket.
+	_ = wc.conn.SetWriteDeadline(time.Now().Add(b.writeTimeout))
+	defer wc.conn.SetWriteDeadline(time.Time{})
+	var err error
 	if wc.out != nil {
 		wc.out.Write(raw)
 		wc.out.WriteByte('\n')
-		wc.out.Flush()
-		return
+		err = wc.out.Flush()
+	} else {
+		_, err = wc.conn.Write(append(append([]byte{}, raw...), '\n'))
 	}
-	wc.conn.Write(append(append([]byte{}, raw...), '\n'))
+	if err != nil {
+		// A client that stopped reading: drop it rather than stall the pump.
+		b.logf("connection %d (%s): reply write failed, closing: %v", wc.id, wc.role, err)
+		wc.conn.Close()
+	}
 }
 
 func (b *Bridge) statsRejectOffline(_ frame) {

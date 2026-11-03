@@ -32,6 +32,14 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ### Fixed
 
+- `bridge_app` waited out its 30 s command timeout on a dead agent after
+  Dungeondraft restarted its scene (`new_map`, `open_map`): the request now
+  fails at once with `agent_lost`, so those ops take about a second.
+- `bridge_app` data races on agent and connection state, and a user that
+  stopped reading could stall every other client (replies now have a 5 s
+  write deadline). A mod on another protocol version is refused with
+  `protocol_mismatch`; `ping` reports `agent_protocol`.
+
 - A Terraform refresh while Dungeondraft was offline or slow dropped every
   element it read from state. Only a `not_found` answer now means an element
   is gone; any other failure is an error and state is left alone.

@@ -56,6 +56,13 @@ func TestPreconditionRejectsModifiedUnsavedMap(t *testing.T) {
 	}
 }
 
+func TestPreconditionRejectsStaleMod(t *testing.T) {
+	err := checkPreconditions(bridgePing{DDConnected: true, Protocol: 19, AgentProtocol: 18}, bridge.MapStatus{})
+	if err == nil || !strings.Contains(err.Error(), "v18") || !strings.Contains(err.Error(), "restart Dungeondraft") {
+		t.Fatalf("err = %v, want it to name v18 and say to restart Dungeondraft", err)
+	}
+}
+
 func TestPreconditionAllowsEmptyUnsavedMap(t *testing.T) {
 	err := checkPreconditions(bridgePing{DDConnected: true}, bridge.MapStatus{
 		MapOpen: true,

@@ -85,6 +85,8 @@ never on the message text. An error without a code is still an error.
 | `timeout` | bridge_app | the agent did not reply within the command timeout |
 | `not_found` | mod | no element with the given `id`. The **only** answer that means an element is gone |
 | `wrong_map` | mod | the request's `map` is not the open map |
+| `agent_lost` | bridge_app | the agent disconnected or was superseded (Dungeondraft restarted its scene, e.g. `new_map`/`open_map`, or crashed) while running this command; it may or may not have run |
+| `protocol_mismatch` | bridge_app | the connected mod speaks a different protocol version; restart Dungeondraft so it loads the current mod |
 
 ## Commands
 
@@ -96,7 +98,7 @@ Coordinates are **woxel** (world pixel) space; map center is in
 
 | cmd | params | result |
 | --- | --- | --- |
-| `ping` | — | `{ pong, protocol, app, dd_connected }` — answered by the app itself; `dd_connected` false when no agent is linked |
+| `ping` | — | `{ pong, protocol, app, dd_connected, agent_protocol }` — answered by the app itself; `dd_connected` false when no agent is linked; `agent_protocol` is the connected mod's version (0 when none) |
 | `get_status` | — | `{ map_open, level_id, level_count, map_size_woxels, map_center, counts{}, active_tool, busy, modified, map_file, last_map_op }` — the last four are present even with no map open; see Map lifecycle |
 | `list_asset_categories` | — | `{ categories[] }` |
 | `list_assets` | `category="Objects"`, `search=""`, `limit=100` | `{ category, total, matched, returned, assets[] }` |

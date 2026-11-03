@@ -240,7 +240,7 @@ func TestAgentReplace(t *testing.T) {
 	addr, _, _ := startBridge(t, Options{})
 	a1 := helloAgent(t, addr)
 	defer a1.conn.Close()
-	go drain(a1.reader)
+	// a1 is not drained: the test reads it below, and two readers race.
 
 	a2 := helloAgent(t, addr)
 	defer a2.conn.Close()
