@@ -16,9 +16,14 @@ variable "bridge_port" {
   default = 8787
 }
 
+variable "map_file" {
+  type = string
+}
+
 provider "dungeondraft" {
-  host = "127.0.0.1"
-  port = var.bridge_port
+  host     = "127.0.0.1"
+  port     = var.bridge_port
+  map_file = var.map_file
 }
 
 data "dungeondraft_assets" "object" {

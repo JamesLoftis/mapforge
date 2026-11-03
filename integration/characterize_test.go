@@ -36,6 +36,7 @@ var replacementLine = regexp.MustCompile(`# (\S+) must be replaced`)
 func TestCharacterizeApplySaveReopenPlan(t *testing.T) {
 	tf := newTerraform(t)
 	path := scratchMap(t)
+	tf.mapFile = path
 
 	tf.run(t, "init", "-input=false")
 	tf.run(t, "apply", "-auto-approve", "-input=false")
@@ -65,6 +66,8 @@ type terraform struct {
 	dir           string
 	builtProvider string
 	cliConfig     string
+	// mapFile is the fixture's map_file variable (TF_VAR_map_file).
+	mapFile string
 }
 
 func newTerraform(t *testing.T) terraform {
@@ -106,7 +109,8 @@ func (tf terraform) output(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	cmd := exec.CommandContext(ctx(t), tf.binary, append(args, "-no-color")...)
 	cmd.Dir = tf.dir
-	cmd.Env = append(os.Environ(), "TF_IN_AUTOMATION=1", "TF_CLI_CONFIG_FILE="+tf.cliConfig)
+	cmd.Env = append(os.Environ(), "TF_IN_AUTOMATION=1", "TF_CLI_CONFIG_FILE="+tf.cliConfig,
+		"TF_VAR_map_file="+tf.mapFile)
 	out, err := cmd.CombinedOutput()
 	t.Logf("terraform %s:\n%s", args[0], out)
 	var exitErr *exec.ExitError

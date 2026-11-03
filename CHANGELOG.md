@@ -24,6 +24,9 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ### Changed
 
+- The provider block requires `map_file`, and every command carries it as
+  `map`; Dungeondraft refuses commands (`wrong_map`) while another map is
+  open, so state can never be read against the wrong map.
 - Protocol v19: error replies carry a machine-readable `code` (`offline`,
   `timeout`, `not_found`); see PROTOCOL.md, Error codes.
 

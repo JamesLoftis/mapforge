@@ -18,7 +18,7 @@ import (
 // leave state alone, not report every element gone.
 func TestRefreshWithDungeondraftOfflineKeepsState(t *testing.T) {
 	tf := newTerraform(t)
-	scratchMap(t)
+	tf.mapFile = scratchMap(t)
 	tf.run(t, "init", "-input=false")
 	tf.run(t, "apply", "-auto-approve", "-input=false")
 	t.Cleanup(func() { tf.run(t, "destroy", "-auto-approve", "-input=false") })

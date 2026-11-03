@@ -44,6 +44,7 @@ const (
 	CodeOffline  = "offline"
 	CodeTimeout  = "timeout"
 	CodeNotFound = "not_found"
+	CodeWrongMap = "wrong_map"
 )
 
 // IsNotFound reports whether err is the bridge saying the element does not
@@ -70,6 +71,9 @@ type Client struct {
 	Port     int
 	Timeout  time.Duration // per-socket timeout for dial and reads
 	Attempts int           // transport retry count (>= 1)
+	// MapFile, when set, rides on every command but ping as "map"; the mod
+	// refuses (wrong_map) any command while a different map is open.
+	MapFile string
 
 	// levelMu excludes level-targeted RunOnLevel calls from every other
 	// RunOnLevel call, targeted or not, while letting untargeted calls run
@@ -112,6 +116,9 @@ func (c *Client) Request(ctx context.Context, cmd string, params map[string]any)
 		if v != nil {
 			payload[k] = v
 		}
+	}
+	if c.MapFile != "" && cmd != "ping" {
+		payload["map"] = c.MapFile
 	}
 	buf, err := json.Marshal(payload)
 	if err != nil {

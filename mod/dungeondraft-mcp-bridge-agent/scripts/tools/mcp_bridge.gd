@@ -196,8 +196,28 @@ func _handle_request(line : String):
 	# heartbeat ping, not a user command — consume it silently.
 	if not req.has("cmd"):
 		return
+	if req.has("map") and not _is_open_map(req["map"]):
+		_send(_err_code("wrong_map", "command is for %s but %s is open" % [str(req["map"]), _open_map_description()]))
+		return
 	var resp = _record_and_dispatch(req)
 	_send(resp)
+
+
+# Terraform state belongs to one map file: a command naming another map must
+# never touch (or report missing) elements of the open one.
+func _is_open_map(path) -> bool:
+	var open_file = Global.Editor.CurrentMapFile
+	return typeof(path) == TYPE_STRING and open_file != null and _same_path(path, open_file)
+
+
+func _open_map_description() -> String:
+	var open_file = Global.Editor.CurrentMapFile
+	return open_file if open_file != null and open_file != "" else "an unsaved map"
+
+
+# Windows paths: case-insensitive, either slash.
+func _same_path(a : String, b : String) -> bool:
+	return a.replace("\\", "/").to_lower() == b.replace("\\", "/").to_lower()
 
 
 # Refresh the tool-panel status line. Never raises on a missing label.

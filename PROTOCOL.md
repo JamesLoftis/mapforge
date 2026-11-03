@@ -52,6 +52,11 @@ diagnosable at a glance (see `bridge_app/` for the health page and `/health`).
 ```
 
 - `cmd` (string, required) — the command name.
+- `map` (string, optional) — the absolute path of the map this command is
+  for. When present, the mod compares it with the open map's file
+  (case-insensitive, either slash) and refuses the command with code
+  `wrong_map` if they differ or the open map is unsaved. The Terraform
+  provider sends it on every command but `ping`.
 - `id` (any, optional) — echoed back verbatim in the response for correlation.
 - everything else — command-specific parameters.
 
@@ -79,6 +84,7 @@ never on the message text. An error without a code is still an error.
 | `offline` | bridge_app | no Dungeondraft agent is connected |
 | `timeout` | bridge_app | the agent did not reply within the command timeout |
 | `not_found` | mod | no element with the given `id`. The **only** answer that means an element is gone |
+| `wrong_map` | mod | the request's `map` is not the open map |
 
 ## Commands
 

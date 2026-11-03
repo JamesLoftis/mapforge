@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -36,8 +37,9 @@ func (p *ddProvider) Metadata(_ context.Context, _ provider.MetadataRequest, res
 // ddProviderModel mirrors the provider block: host/port config, matching the
 // bridge's defaults (and DD_BRIDGE_HOST / DD_BRIDGE_PORT).
 type ddProviderModel struct {
-	Host types.String `tfsdk:"host"`
-	Port types.Int64  `tfsdk:"port"`
+	Host    types.String `tfsdk:"host"`
+	Port    types.Int64  `tfsdk:"port"`
+	MapFile types.String `tfsdk:"map_file"`
 }
 
 func (p *ddProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
@@ -51,6 +53,12 @@ func (p *ddProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *p
 			"port": schema.Int64Attribute{
 				Optional:    true,
 				Description: "Bridge port (default 8787).",
+			},
+			"map_file": schema.StringAttribute{
+				Required: true,
+				Description: "The .dungeondraft_map this state belongs to (absolute path). Every command " +
+					"names it, and Dungeondraft refuses commands while a different map is open.",
+				Validators: []validator.String{mapFilePath{}},
 			},
 		},
 	}
@@ -76,8 +84,11 @@ func (p *ddProvider) Configure(ctx context.Context, req provider.ConfigureReques
 	if !model.Port.IsNull() && !model.Port.IsUnknown() {
 		port = int(model.Port.ValueInt64())
 	}
-	resp.DataSourceData = &providerData{client: bridge.New(host, port)}
-	resp.ResourceData = &providerData{client: bridge.New(host, port)}
+	dataClient, resourceClient := bridge.New(host, port), bridge.New(host, port)
+	dataClient.MapFile = model.MapFile.ValueString()
+	resourceClient.MapFile = model.MapFile.ValueString()
+	resp.DataSourceData = &providerData{client: dataClient}
+	resp.ResourceData = &providerData{client: resourceClient}
 }
 
 func (p *ddProvider) DataSources(_ context.Context) []func() datasource.DataSource {
