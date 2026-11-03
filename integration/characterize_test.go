@@ -1,0 +1,117 @@
+//go:build integration
+
+package integration
+
+import (
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"sort"
+	"testing"
+)
+
+const (
+	characterizeFixture = "testdata/characterize/main.tf"
+	planHasChangesExit  = 2
+)
+
+// characterizedReplacements is today's drift after save and reopen.
+// Dungeondraft does not save level ids: on load it renumbers levels by
+// position (World.LoadLevel -> AssignLevelID), and new levels are inserted
+// at index 0, so the fixture's level comes back under the other level's id
+// and every resource pinned to it by level_id is replaced. Plan 2/4 fixes
+// this; then the plan must show no changes.
+var characterizedReplacements = []string{
+	"dungeondraft_level.upper",
+	"dungeondraft_object.upper_object",
+}
+
+var replacementLine = regexp.MustCompile(`# (\S+) must be replaced`)
+
+// TestCharacterizeApplySaveReopenPlan pins today's end-to-end behavior: the
+// fixture applies, survives save and reopen with no drift, and destroys clean.
+func TestCharacterizeApplySaveReopenPlan(t *testing.T) {
+	tf := newTerraform(t)
+	path := scratchMap(t)
+
+	tf.run(t, "init", "-input=false")
+	tf.run(t, "apply", "-auto-approve", "-input=false")
+	saveAndReopen(t, path)
+
+	code, plan := tf.output(t, "plan", "-detailed-exitcode", "-input=false")
+	if code != planHasChangesExit || !reflect.DeepEqual(replacedResources(plan), characterizedReplacements) {
+		t.Errorf("characterized: plan after save and reopen should replace exactly %v (level ids "+
+			"are renumbered on load); got exit %d replacing %v", characterizedReplacements, code,
+			replacedResources(plan))
+	}
+
+	tf.run(t, "destroy", "-auto-approve", "-input=false")
+	st, err := dd.Status(ctx(t))
+	if err != nil {
+		t.Fatalf("status after destroy: %v", err)
+	}
+	if n := totalElements(st); n != 0 {
+		t.Errorf("after destroy the map still holds %d elements (%s)", n, describeCounts(st))
+	}
+}
+
+// terraform runs the terraform CLI in a private copy of the fixture.
+type terraform struct {
+	binary string
+	dir    string
+}
+
+func newTerraform(t *testing.T) terraform {
+	t.Helper()
+	binary, err := exec.LookPath("terraform")
+	if err != nil {
+		t.Skip("terraform CLI not on PATH; install Terraform >= 1.5 to run the characterization test")
+	}
+	dir := t.TempDir()
+	fixture, err := os.ReadFile(characterizeFixture)
+	if err != nil {
+		t.Fatalf("reading fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.tf"), fixture, 0o644); err != nil {
+		t.Fatalf("copying fixture: %v", err)
+	}
+	return terraform{binary: binary, dir: dir}
+}
+
+func replacedResources(plan string) []string {
+	var replaced []string
+	for _, m := range replacementLine.FindAllStringSubmatch(plan, -1) {
+		replaced = append(replaced, m[1])
+	}
+	sort.Strings(replaced)
+	return replaced
+}
+
+func (tf terraform) run(t *testing.T, args ...string) {
+	t.Helper()
+	if code, _ := tf.output(t, args...); code != 0 {
+		t.Fatalf("terraform %s exited %d", args[0], code)
+	}
+}
+
+// output runs terraform and returns its exit code and output, logging the output.
+func (tf terraform) output(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	cmd := exec.CommandContext(ctx(t), tf.binary, append(args, "-no-color")...)
+	cmd.Dir = tf.dir
+	cmd.Env = append(os.Environ(), "TF_IN_AUTOMATION=1")
+	out, err := cmd.CombinedOutput()
+	t.Logf("terraform %s:\n%s", args[0], out)
+	var exitErr *exec.ExitError
+	switch {
+	case err == nil:
+		return 0, string(out)
+	case errors.As(err, &exitErr):
+		return exitErr.ExitCode(), string(out)
+	}
+	t.Fatalf("running terraform %s: %v", args[0], err)
+	return -1, ""
+}

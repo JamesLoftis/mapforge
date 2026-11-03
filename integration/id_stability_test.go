@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"testing"
 )
@@ -27,7 +28,20 @@ func TestElementIDsSurviveSaveAndReopen(t *testing.T) {
 	elements := createOneOfEachKind(c, t)
 
 	before := describeAll(c, t, elements)
+	level := addLevel(c, t, "Upper")
 	saveAndReopen(t, path)
+
+	t.Run("level", func(t *testing.T) {
+		label, found := levelLabels(ctx(t), t)[level.id]
+		switch {
+		case !found:
+			t.Errorf("level id %v no longer exists after reopen", level.id)
+		case label != level.label:
+			t.Skipf("characterized: level ids are renumbered by position on load, so id %v "+
+				"(was %q) now names %q — Terraform level identity needs a redesign (plan 2/4)",
+				level.id, level.label, label)
+		}
+	})
 
 	for _, el := range elements {
 		t.Run(el.label, func(t *testing.T) {
@@ -86,6 +100,36 @@ func createOneOfEachKind(c context.Context, t *testing.T) []createdElement {
 		made = append(made, createdElement{label: "room_floor", id: floor})
 	}
 	return made
+}
+
+// levelLabel is a level's id and label, as list_levels reports them.
+type levelLabel struct {
+	id    string
+	label string
+}
+
+func addLevel(c context.Context, t *testing.T, label string) levelLabel {
+	t.Helper()
+	res, err := dd.Request(c, "add_level", map[string]any{"label": label})
+	if err != nil {
+		t.Fatalf("add_level: %v", err)
+	}
+	return levelLabel{id: fmt.Sprint(res["id"]), label: label}
+}
+
+func levelLabels(c context.Context, t *testing.T) map[string]string {
+	t.Helper()
+	res, err := dd.Request(c, "list_levels", nil)
+	if err != nil {
+		t.Fatalf("list_levels: %v", err)
+	}
+	labels := map[string]string{}
+	levels, _ := res["levels"].([]any)
+	for _, raw := range levels {
+		lv, _ := raw.(map[string]any)
+		labels[fmt.Sprint(lv["id"])] = fmt.Sprint(lv["label"])
+	}
+	return labels
 }
 
 func firstAsset(c context.Context, t *testing.T, category string) string {
