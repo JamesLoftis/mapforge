@@ -58,10 +58,13 @@ func TestCharacterizeApplySaveReopenPlan(t *testing.T) {
 	}
 }
 
-// terraform runs the terraform CLI in a private copy of the fixture.
+// terraform runs the terraform CLI in a private copy of the fixture, using
+// the provider built from this tree (see buildProvider).
 type terraform struct {
-	binary string
-	dir    string
+	binary        string
+	dir           string
+	builtProvider string
+	cliConfig     string
 }
 
 func newTerraform(t *testing.T) terraform {
@@ -78,7 +81,8 @@ func newTerraform(t *testing.T) terraform {
 	if err := os.WriteFile(filepath.Join(dir, "main.tf"), fixture, 0o644); err != nil {
 		t.Fatalf("copying fixture: %v", err)
 	}
-	return terraform{binary: binary, dir: dir}
+	mirror, built := buildProvider(t)
+	return terraform{binary: binary, dir: dir, builtProvider: built, cliConfig: writeCLIConfig(t, mirror)}
 }
 
 func replacedResources(plan string) []string {
@@ -102,7 +106,7 @@ func (tf terraform) output(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	cmd := exec.CommandContext(ctx(t), tf.binary, append(args, "-no-color")...)
 	cmd.Dir = tf.dir
-	cmd.Env = append(os.Environ(), "TF_IN_AUTOMATION=1")
+	cmd.Env = append(os.Environ(), "TF_IN_AUTOMATION=1", "TF_CLI_CONFIG_FILE="+tf.cliConfig)
 	out, err := cmd.CombinedOutput()
 	t.Logf("terraform %s:\n%s", args[0], out)
 	var exitErr *exec.ExitError
