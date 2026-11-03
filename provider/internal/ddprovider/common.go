@@ -22,15 +22,11 @@ import (
 // write-only for those fields — they cannot be read back, so they are not
 // marked Computed and defaults are simply trusted.
 
-// createNode runs a bridge create command that returns a numeric element id
-// and returns the id as the Terraform resource id. levelID, when non-empty,
-// is a dungeondraft_level.x.id to create the element on — see
-// bridge.Client.RunOnLevel for why that has to wrap the whole call rather
-// than just being another param.
-func createNode(ctx context.Context, c *bridge.Client, cmd string, params map[string]any, levelID string) (string, diag.Diagnostics) {
-	res, err := c.RunOnLevel(ctx, levelID, func() (map[string]any, error) {
-		return c.Request(ctx, cmd, params)
-	})
+// createNode runs a bridge create command on the level labelled level and
+// returns the new element's numeric id as the Terraform resource id.
+func createNode(ctx context.Context, c *bridge.Client, cmd string, params map[string]any, level string) (string, diag.Diagnostics) {
+	params["level"] = level
+	res, err := c.Request(ctx, cmd, params)
 	if err != nil {
 		return "", diagErrf("Failed to run "+cmd, "%v", err)
 	}

@@ -59,6 +59,12 @@ diagnosable at a glance (see `bridge_app/` for the health page and `/health`).
   (`offline`, `protocol_mismatch`) are not remembered, so a retry runs. The
   mod copies `req_id` into its reply, and `bridge_app` ignores an agent reply
   whose `req_id` names another request.
+- `level` (string, optional) — the label of the level to run this command on.
+  The mod finds the one level with that label, makes it current for this
+  command only, and then restores the level that was active. No level with
+  the label replies `level_not_found`; more than one replies
+  `level_ambiguous`. Levels are identified by label because Dungeondraft
+  saves labels but renumbers level ids on load.
 - `map` (string, optional) — the absolute path of the map this command is
   for. When present, the mod compares it with the open map's file
   (case-insensitive, either slash) and refuses the command with code
@@ -92,6 +98,9 @@ never on the message text. An error without a code is still an error.
 | `timeout` | bridge_app | the agent did not reply within the command timeout |
 | `not_found` | mod | no element with the given `id`. The **only** answer that means an element is gone |
 | `wrong_map` | mod | the request's `map` is not the open map |
+| `level_not_found` | mod | no level has the request's `level` label |
+| `level_ambiguous` | mod | more than one level has the request's `level` label |
+| `label_exists` | mod | `add_level` with a label another level already has |
 | `agent_lost` | bridge_app | the agent disconnected or was superseded (Dungeondraft restarted its scene, e.g. `new_map`/`open_map`, or crashed) while running this command; it may or may not have run |
 | `protocol_mismatch` | bridge_app | the connected mod speaks a different protocol version; restart Dungeondraft so it loads the current mod |
 
@@ -190,7 +199,7 @@ It is undo-recorded like the other terrain ops.
 | `modify_object` | `id`, `scale?`, `rotation?`, `color?`, `shadow?` |
 | `duplicate_object` | `id`, `dx=64`, `dy=0` → `{ id }` |
 | `delete_element` | `id` → `{ deleted }` |
-| `add_level` | `label="Level"` → `{ id, label }` |
+| `add_level` | `label` — required, unique among the map's levels → `{ id, label }` |
 | `set_level` | `index` |
 | `select_elements` | `ids[]` |
 | `clear_selection` | — |

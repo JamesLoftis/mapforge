@@ -24,6 +24,7 @@ provider "dungeondraft" {
   host     = "127.0.0.1"
   port     = var.bridge_port
   map_file = var.map_file
+  level    = "Ground"
 }
 
 data "dungeondraft_assets" "object" {
@@ -107,7 +108,7 @@ resource "dungeondraft_object" "upper_object" {
   color    = "#ffffff"
   sorting  = 0
   z        = 200
-  level_id = dungeondraft_level.upper.id
+  level    = dungeondraft_level.upper.label
 }
 
 resource "dungeondraft_light" "light" {

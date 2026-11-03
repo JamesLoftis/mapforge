@@ -26,9 +26,9 @@ import (
 // undo whatever was drawn on top of it there. Same class of limitation as
 // two `dungeondraft_object`s occupying the same tile; not special to caves.
 
-type caveResource struct{ *nodeResourceBase }
+type caveResource struct{ *levelPaintedBase }
 
-func NewCaveResource() resource.Resource { return &caveResource{&nodeResourceBase{}} }
+func NewCaveResource() resource.Resource { return &caveResource{newLevelPaintedBase()} }
 
 func (r *caveResource) Metadata(_ context.Context, _ resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = typeName + "_cave"
@@ -44,7 +44,7 @@ type caveModel struct {
 	GroundColor types.String  `tfsdk:"ground_color"`
 	WallColor   types.String  `tfsdk:"wall_color"`
 	Texture     types.String  `tfsdk:"texture"`
-	LevelID     types.String  `tfsdk:"level_id"`
+	Level       types.String  `tfsdk:"level"`
 }
 
 func (r *caveResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -60,12 +60,7 @@ func (r *caveResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			"ground_color": schema.StringAttribute{Optional: true, Description: "#rrggbb cave floor tint."},
 			"wall_color":   schema.StringAttribute{Optional: true, Description: "#rrggbb cave wall tint."},
 			"texture":      schema.StringAttribute{Optional: true, Description: "A Caves floor texture asset path."},
-			// Not RequiresReplace, matching terrain_fill: a level_id change
-			// just re-applies like any other change.
-			"level_id": schema.StringAttribute{
-				Optional:    true,
-				Description: "A dungeondraft_level id to carve on. Omit to use whatever level is currently active.",
-			},
+			"level":        paintLevelAttribute(),
 		},
 	}
 }
@@ -107,9 +102,8 @@ func (r *caveResource) apply(ctx context.Context, m *caveModel) (string, diag.Di
 	if !m.Texture.IsNull() && m.Texture.ValueString() != "" {
 		params["texture"] = m.Texture.ValueString()
 	}
-	_, err := r.client.RunOnLevel(ctx, m.LevelID.ValueString(), func() (map[string]any, error) {
-		return r.client.Request(ctx, "dig_cave", params)
-	})
+	params["level"] = m.Level.ValueString()
+	_, err := r.client.Request(ctx, "dig_cave", params)
 	if err != nil {
 		return zero, diagErrf("Failed to run dig_cave", "%v", err)
 	}

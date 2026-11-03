@@ -19,9 +19,9 @@ import (
 // trip. Like dungeondraft_terrain_fill this has no reshape API — every
 // attribute replaces on change, and Update is never actually called.
 
-type roomResource struct{ *nodeResourceBase }
+type roomResource struct{ *levelPlacedBase }
 
-func NewRoomResource() resource.Resource { return &roomResource{&nodeResourceBase{}} }
+func NewRoomResource() resource.Resource { return &roomResource{newLevelPlacedBase()} }
 
 func (r *roomResource) Metadata(_ context.Context, _ resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = typeName + "_room"
@@ -41,7 +41,7 @@ type roomModel struct {
 	FloorColor    types.String `tfsdk:"floor_color"`
 	FloorSlot     types.Int64  `tfsdk:"floor_slot"`
 	FloorID       types.String `tfsdk:"floor_id"`
-	LevelID       types.String `tfsdk:"level_id"`
+	Level         types.String `tfsdk:"level"`
 }
 
 func (r *roomResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -72,7 +72,7 @@ func (r *roomResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			"floor_slot": schema.Int64Attribute{Optional: true, Description: "Terrain slot index (default 1); terrain floors only.",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
 			"floor_id": schema.StringAttribute{Computed: true, Description: "The floor pattern shape's element id. Only set when floor = \"pattern\" (terrain floors have no element id, like dungeondraft_terrain_fill)."},
-			"level_id": levelIDAttribute(),
+			"level":    levelAttribute(),
 		},
 	}
 }
@@ -139,9 +139,8 @@ func (r *roomResource) Create(ctx context.Context, req resource.CreateRequest, r
 		params["floor_slot"] = m.FloorSlot.ValueInt64()
 	}
 
-	result, err := c.RunOnLevel(ctx, m.LevelID.ValueString(), func() (map[string]any, error) {
-		return c.Request(ctx, "build_room", params)
-	})
+	params["level"] = m.Level.ValueString()
+	result, err := c.Request(ctx, "build_room", params)
 	if err != nil {
 		resp.Diagnostics.Append(diagErrf("Failed to run build_room", "%v", err)...)
 		return

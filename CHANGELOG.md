@@ -24,6 +24,13 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ### Changed
 
+- Levels are identified by label. Any command may carry `level` (a label);
+  the mod applies it for that command and restores the active level.
+  `add_level` requires a unique `label`. In the provider, `level_id` is
+  replaced by `level` on every element resource, the provider block gains
+  `level`, and a resource with neither fails at plan time;
+  `dungeondraft_level`'s id is its label. `bridgeclient.RunOnLevel` is gone,
+  and the provider builds one bridge client.
 - The provider block requires `map_file`, and every command carries it as
   `map`; Dungeondraft refuses commands (`wrong_map`) while another map is
   open, so state can never be read against the wrong map.
@@ -31,6 +38,14 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
   `timeout`, `not_found`); see PROTOCOL.md, Error codes.
 
 ### Fixed
+
+- After a save and reopen, Terraform replaced every level and every element
+  on a non-first level: Dungeondraft renumbers level ids on load. A
+  `set_level` from one resource could also leak into another's create.
+- `set_level` never changed the active level: the mod called C#
+  `World.SetLevel(int, bool loading = false)` with one argument, and
+  GDScript does not apply C# default arguments, so every level-targeted
+  create landed on whichever level was active. It now passes both.
 
 - A client that timed out on a queued edit and retried it created a
   duplicate element. Requests carry a `req_id`; `bridge_app` runs each once

@@ -199,12 +199,52 @@ func _handle_request(line : String):
 	var resp
 	if req.has("map") and not _is_open_map(req["map"]):
 		resp = _err_code("wrong_map", "command is for %s but %s is open" % [str(req["map"]), _open_map_description()])
+	elif req.has("level"):
+		resp = _dispatch_on_level(req)
 	else:
 		resp = _record_and_dispatch(req)
 	# bridge_app matches each reply to its request by req_id.
 	if req.has("req_id"):
 		resp["req_id"] = req["req_id"]
 	_send(resp)
+
+
+# Runs one command on the level labelled req.level, then makes the level that
+# was active before current again, so a command never moves the UI's level
+# and no other command can land in between (spec finding 3).
+func _dispatch_on_level(req : Dictionary) -> Dictionary:
+	var target = _level_index_for_label(req["level"])
+	if typeof(target) == TYPE_DICTIONARY:
+		return target   # the label's error
+	var previous : int = Global.World.CurrentLevelId
+	if target != previous:
+		Global.World.SetLevel(target, false)
+	var resp = _record_and_dispatch(req)
+	if target != previous:
+		Global.World.SetLevel(previous, false)
+	return resp
+
+
+# A level is identified by its label, which Dungeondraft saves (its id is
+# renumbered on load). Returns the level's index, or an error Dictionary.
+func _level_index_for_label(label):
+	if typeof(label) != TYPE_STRING or label == "":
+		return _err("level must be a level's label, got " + str(label))
+	var matches := _level_indexes_labelled(label)
+	if matches.empty():
+		return _err_code("level_not_found", "no level is labelled " + label)
+	if matches.size() > 1:
+		return _err_code("level_ambiguous", "%d levels are labelled %s" % [matches.size(), label])
+	return matches[0]
+
+
+func _level_indexes_labelled(label : String) -> Array:
+	var matches := []
+	var levels = Global.World.levels
+	for i in range(levels.size()):
+		if levels[i].Label == label:
+			matches.append(i)
+	return matches
 
 
 # Terraform state belongs to one map file: a command naming another map must
@@ -1861,7 +1901,12 @@ func _delete_element(req : Dictionary) -> Dictionary:
 # ---------------------------------------------------------------------------
 
 func _add_level(req : Dictionary) -> Dictionary:
-	var lv = Global.World.CreateLevel(str(req.get("label", "Level")))
+	var label = req.get("label")
+	if typeof(label) != TYPE_STRING or label == "":
+		return _err("add_level needs label: a non-empty string (levels are identified by label)")
+	if not _level_indexes_labelled(label).empty():
+		return _err_code("label_exists", "a level labelled %s already exists" % label)
+	var lv = Global.World.CreateLevel(label)
 	return _ok({ "id": lv.ID, "label": lv.Label })
 
 
@@ -1869,7 +1914,7 @@ func _set_level(req : Dictionary) -> Dictionary:
 	var idx = _i(req.get("index", 0), 0)
 	if idx < 0 or idx >= Global.World.levels.size():
 		return _err("level index out of range: " + str(idx))
-	Global.World.SetLevel(idx)
+	Global.World.SetLevel(idx, false)
 	return _ok({ "current_index": idx })
 
 

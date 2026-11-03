@@ -40,6 +40,7 @@ type ddProviderModel struct {
 	Host    types.String `tfsdk:"host"`
 	Port    types.Int64  `tfsdk:"port"`
 	MapFile types.String `tfsdk:"map_file"`
+	Level   types.String `tfsdk:"level"`
 }
 
 func (p *ddProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
@@ -60,6 +61,11 @@ func (p *ddProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *p
 					"names it, and Dungeondraft refuses commands while a different map is open.",
 				Validators: []validator.String{mapFilePath{}},
 			},
+			"level": schema.StringAttribute{
+				Optional: true,
+				Description: "Label of the level elements are created on unless a resource sets its own level. " +
+					"A resource with neither fails at plan time.",
+			},
 		},
 	}
 }
@@ -67,6 +73,7 @@ func (p *ddProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *p
 // providerData is stashed in the DataSourceData/ResourceData for each call.
 type providerData struct {
 	client *bridge.Client
+	level  string // default level label for resources without their own
 }
 
 func (p *ddProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
@@ -84,11 +91,11 @@ func (p *ddProvider) Configure(ctx context.Context, req provider.ConfigureReques
 	if !model.Port.IsNull() && !model.Port.IsUnknown() {
 		port = int(model.Port.ValueInt64())
 	}
-	dataClient, resourceClient := bridge.New(host, port), bridge.New(host, port)
-	dataClient.MapFile = model.MapFile.ValueString()
-	resourceClient.MapFile = model.MapFile.ValueString()
-	resp.DataSourceData = &providerData{client: dataClient}
-	resp.ResourceData = &providerData{client: resourceClient}
+	client := bridge.New(host, port)
+	client.MapFile = model.MapFile.ValueString()
+	data := &providerData{client: client, level: model.Level.ValueString()}
+	resp.DataSourceData = data
+	resp.ResourceData = data
 }
 
 func (p *ddProvider) DataSources(_ context.Context) []func() datasource.DataSource {

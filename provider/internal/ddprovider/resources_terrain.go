@@ -21,25 +21,25 @@ import (
 // desired params — re-applying the same plan is idempotent, and any change
 // re-paints (recovers to desired). Delete cannot un-paint: it warns instead.
 
-type terrainFillResource struct{ *nodeResourceBase }
+type terrainFillResource struct{ *levelPaintedBase }
 
-func NewTerrainFillResource() resource.Resource { return &terrainFillResource{&nodeResourceBase{}} }
+func NewTerrainFillResource() resource.Resource { return &terrainFillResource{newLevelPaintedBase()} }
 
 func (r *terrainFillResource) Metadata(_ context.Context, _ resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = typeName + "_terrain_fill"
 }
 
 type terrainFillModel struct {
-	ID      types.String  `tfsdk:"id"`
-	Slot    types.Int64   `tfsdk:"slot"`
-	Asset   types.String  `tfsdk:"asset"`
-	Rect    types.List    `tfsdk:"rect"`
-	Points  types.List    `tfsdk:"points"`
-	X       types.Float64 `tfsdk:"x"`
-	Y       types.Float64 `tfsdk:"y"`
-	Radius  types.Float64 `tfsdk:"radius"`
-	Rate    types.Float64 `tfsdk:"rate"`
-	LevelID types.String  `tfsdk:"level_id"`
+	ID     types.String  `tfsdk:"id"`
+	Slot   types.Int64   `tfsdk:"slot"`
+	Asset  types.String  `tfsdk:"asset"`
+	Rect   types.List    `tfsdk:"rect"`
+	Points types.List    `tfsdk:"points"`
+	X      types.Float64 `tfsdk:"x"`
+	Y      types.Float64 `tfsdk:"y"`
+	Radius types.Float64 `tfsdk:"radius"`
+	Rate   types.Float64 `tfsdk:"rate"`
+	Level  types.String  `tfsdk:"level"`
 }
 
 func (r *terrainFillResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -55,14 +55,7 @@ func (r *terrainFillResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"y":      schema.Float64Attribute{Optional: true, Description: "Brush center for a single paint_terrain dab; requires x."},
 			"radius": schema.Float64Attribute{Optional: true, Description: "Brush radius for x/y (paint_terrain, default 64) or points (paint_path, default 96). Ignored for rect/points-only or whole-level fills."},
 			"rate":   schema.Float64Attribute{Optional: true, Description: "Paint strength 0..1 (default 1). Whole-level fill is always full-strength; setting rate without a shape/brush is an error."},
-			// Not RequiresReplace, matching every other field here: a
-			// level_id change just re-applies apply() like any other change
-			// (paints the new level; the old level's paint is not undone,
-			// same as every other terrain_fill re-application).
-			"level_id": schema.StringAttribute{
-				Optional:    true,
-				Description: "A dungeondraft_level id to paint on. Omit to use whatever level is currently active.",
-			},
+			"level":  paintLevelAttribute(),
 		},
 	}
 }
@@ -136,9 +129,8 @@ func (r *terrainFillResource) apply(ctx context.Context, m *terrainFillModel) (s
 			return zero, diagErrf("rate ignored", "rate only applies to region fills or brush paints (whole-level fill is full-strength).")
 		}
 	}
-	_, err := r.client.RunOnLevel(ctx, m.LevelID.ValueString(), func() (map[string]any, error) {
-		return r.client.Request(ctx, cmd, params)
-	})
+	params["level"] = m.Level.ValueString()
+	_, err := r.client.Request(ctx, cmd, params)
 	if err != nil {
 		return zero, diagErrf("Failed to run "+cmd, "%v", err)
 	}

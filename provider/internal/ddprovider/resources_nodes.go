@@ -20,7 +20,8 @@ import (
 // nodeResourceBase carries the bridge client that Configure hands every
 // resource, plus the shared use-it-or-diagnose helper.
 type nodeResourceBase struct {
-	client *bridge.Client
+	client       *bridge.Client
+	defaultLevel string // the provider block's level label, "" when unset
 }
 
 func (b *nodeResourceBase) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
@@ -33,6 +34,7 @@ func (b *nodeResourceBase) Configure(_ context.Context, req resource.ConfigureRe
 		return
 	}
 	b.client = pd.client
+	b.defaultLevel = pd.level
 }
 
 func (b *nodeResourceBase) clientFor(resp *resource.CreateResponse) *bridge.Client {
@@ -76,41 +78,26 @@ func idAttribute() schema.StringAttribute {
 	return schema.StringAttribute{Computed: true}
 }
 
-// levelIDAttribute is the optional level-targeting attribute shared by every
-// creator resource: a dungeondraft_level.x.id to create the element on
-// (see bridge.Client.RunOnLevel). Omitted (the default), the element lands
-// on whichever level is currently active in the DD UI / last set_level call
-// — unchanged, pre-existing behavior. Changing which level an already-
-// created element lives on isn't a bridge operation (there's no
-// "move_element_to_level"), so this always forces a replace.
-func levelIDAttribute() schema.StringAttribute {
-	return schema.StringAttribute{
-		Optional:      true,
-		Description:   "A dungeondraft_level id to create this element on. Omit to use whatever level is currently active.",
-		PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
-	}
-}
-
 // ---- dungeondraft_wall (draw_wall) ---------------------------------------
 
-type wallResource struct{ *nodeResourceBase }
+type wallResource struct{ *levelPlacedBase }
 
-func NewWallResource() resource.Resource { return &wallResource{&nodeResourceBase{}} }
+func NewWallResource() resource.Resource { return &wallResource{newLevelPlacedBase()} }
 
 func (r *wallResource) Metadata(_ context.Context, _ resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = typeName + "_wall"
 }
 
 type wallModel struct {
-	ID      types.String `tfsdk:"id"`
-	Points  types.List   `tfsdk:"points"`
-	Asset   types.String `tfsdk:"asset"`
-	Loop    types.Bool   `tfsdk:"loop"`
-	Type    types.Int64  `tfsdk:"type"`
-	Joint   types.Int64  `tfsdk:"joint"`
-	Color   types.String `tfsdk:"color"`
-	Shadow  types.Bool   `tfsdk:"shadow"`
-	LevelID types.String `tfsdk:"level_id"`
+	ID     types.String `tfsdk:"id"`
+	Points types.List   `tfsdk:"points"`
+	Asset  types.String `tfsdk:"asset"`
+	Loop   types.Bool   `tfsdk:"loop"`
+	Type   types.Int64  `tfsdk:"type"`
+	Joint  types.Int64  `tfsdk:"joint"`
+	Color  types.String `tfsdk:"color"`
+	Shadow types.Bool   `tfsdk:"shadow"`
+	Level  types.String `tfsdk:"level"`
 }
 
 func (r *wallResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -134,9 +121,9 @@ func (r *wallResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
 			"joint": schema.Int64Attribute{Optional: true, Computed: true, Description: "0=sharp, 1=bevel, 2=round.",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
-			"color":    schema.StringAttribute{Optional: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
-			"shadow":   schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
-			"level_id": levelIDAttribute(),
+			"color":  schema.StringAttribute{Optional: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"shadow": schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
+			"level":  levelAttribute(),
 		},
 	}
 }
@@ -176,7 +163,7 @@ func (r *wallResource) Create(ctx context.Context, req resource.CreateRequest, r
 	if !m.Shadow.IsNull() {
 		params["shadow"] = m.Shadow.ValueBool()
 	}
-	id, diags := createNode(ctx, c, "draw_wall", params, m.LevelID.ValueString())
+	id, diags := createNode(ctx, c, "draw_wall", params, m.Level.ValueString())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -240,9 +227,9 @@ func (r *wallResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 
 // ---- dungeondraft_portal (add_portal) ------------------------------------
 
-type portalResource struct{ *nodeResourceBase }
+type portalResource struct{ *levelPlacedBase }
 
-func NewPortalResource() resource.Resource { return &portalResource{&nodeResourceBase{}} }
+func NewPortalResource() resource.Resource { return &portalResource{newLevelPlacedBase()} }
 
 func (r *portalResource) Metadata(_ context.Context, _ resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = typeName + "_portal"
@@ -261,7 +248,7 @@ type portalModel struct {
 	SnapMax      types.Float64 `tfsdk:"snap_max"`
 	Rotation     types.Float64 `tfsdk:"rotation"`
 	FallbackFree types.Bool    `tfsdk:"fallback_free"`
-	LevelID      types.String  `tfsdk:"level_id"`
+	Level        types.String  `tfsdk:"level"`
 }
 
 func (r *portalResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -290,7 +277,7 @@ func (r *portalResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			"snap_max":      schema.Float64Attribute{Optional: true, Description: "Max woxel distance a wall may be and still capture the portal.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
 			"rotation":      schema.Float64Attribute{Optional: true, Description: "Degrees; freestanding only.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
 			"fallback_free": schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
-			"level_id":      levelIDAttribute(),
+			"level":         levelAttribute(),
 		},
 	}
 }
@@ -340,7 +327,7 @@ func (r *portalResource) Create(ctx context.Context, req resource.CreateRequest,
 	if !m.FallbackFree.IsNull() {
 		params["fallback_free"] = m.FallbackFree.ValueBool()
 	}
-	id, diags := createNode(ctx, c, "add_portal", params, m.LevelID.ValueString())
+	id, diags := createNode(ctx, c, "add_portal", params, m.Level.ValueString())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -405,9 +392,9 @@ func (r *portalResource) Delete(ctx context.Context, req resource.DeleteRequest,
 
 // ---- dungeondraft_object (place_object) -----------------------------------
 
-type objectResource struct{ *nodeResourceBase }
+type objectResource struct{ *levelPlacedBase }
 
-func NewObjectResource() resource.Resource { return &objectResource{&nodeResourceBase{}} }
+func NewObjectResource() resource.Resource { return &objectResource{newLevelPlacedBase()} }
 
 func (r *objectResource) Metadata(_ context.Context, _ resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = typeName + "_object"
@@ -423,7 +410,7 @@ type objectModel struct {
 	Sorting  types.Int64   `tfsdk:"sorting"`
 	Color    types.String  `tfsdk:"color"`
 	Z        types.Int64   `tfsdk:"z"`
-	LevelID  types.String  `tfsdk:"level_id"`
+	Level    types.String  `tfsdk:"level"`
 }
 
 func (r *objectResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -446,10 +433,10 @@ func (r *objectResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			// be Computed/drift-checked — but modify_object does accept it, so
 			// Update still applies an explicit change in place (write-only,
 			// like sorting/z, just not replace-on-change like them).
-			"color":    schema.StringAttribute{Optional: true},
-			"sorting":  schema.Int64Attribute{Optional: true, Description: "0=over, 1=under.", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
-			"z":        schema.Int64Attribute{Optional: true, Description: "Absolute z_index (default 200; above legacy floors, below roofs).", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
-			"level_id": levelIDAttribute(),
+			"color":   schema.StringAttribute{Optional: true},
+			"sorting": schema.Int64Attribute{Optional: true, Description: "0=over, 1=under.", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"z":       schema.Int64Attribute{Optional: true, Description: "Absolute z_index (default 200; above legacy floors, below roofs).", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"level":   levelAttribute(),
 		},
 	}
 }
@@ -490,7 +477,7 @@ func (r *objectResource) Create(ctx context.Context, req resource.CreateRequest,
 	if !m.Z.IsNull() {
 		params["z"] = m.Z.ValueInt64()
 	}
-	id, diags := createNode(ctx, c, "place_object", params, m.LevelID.ValueString())
+	id, diags := createNode(ctx, c, "place_object", params, m.Level.ValueString())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -627,9 +614,9 @@ func (r *objectResource) Delete(ctx context.Context, req resource.DeleteRequest,
 
 // ---- dungeondraft_light (add_light) ---------------------------------------
 
-type lightResource struct{ *nodeResourceBase }
+type lightResource struct{ *levelPlacedBase }
 
-func NewLightResource() resource.Resource { return &lightResource{&nodeResourceBase{}} }
+func NewLightResource() resource.Resource { return &lightResource{newLevelPlacedBase()} }
 
 func (r *lightResource) Metadata(_ context.Context, _ resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = typeName + "_light"
@@ -644,7 +631,7 @@ type lightModel struct {
 	Range   types.Float64 `tfsdk:"range"`
 	Shadows types.Bool    `tfsdk:"shadows"`
 	Asset   types.String  `tfsdk:"asset"`
-	LevelID types.String  `tfsdk:"level_id"`
+	Level   types.String  `tfsdk:"level"`
 }
 
 func (r *lightResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -662,7 +649,7 @@ func (r *lightResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			"shadows": schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
 			"asset": schema.StringAttribute{Optional: true, Computed: true, Description: "Lights gradient/cookie texture.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
-			"level_id": levelIDAttribute(),
+			"level": levelAttribute(),
 		},
 	}
 }
@@ -705,7 +692,7 @@ func (r *lightResource) Create(ctx context.Context, req resource.CreateRequest, 
 	if !m.Asset.IsNull() && m.Asset.ValueString() != "" {
 		params["asset"] = m.Asset.ValueString()
 	}
-	id, diags := createNode(ctx, c, "add_light", params, m.LevelID.ValueString())
+	id, diags := createNode(ctx, c, "add_light", params, m.Level.ValueString())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return

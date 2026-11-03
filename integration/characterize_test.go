@@ -7,29 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
-	"regexp"
-	"sort"
 	"testing"
 )
 
 const (
 	characterizeFixture = "testdata/characterize/main.tf"
-	planHasChangesExit  = 2
 )
-
-// characterizedReplacements is today's drift after save and reopen.
-// Dungeondraft does not save level ids: on load it renumbers levels by
-// position (World.LoadLevel -> AssignLevelID), and new levels are inserted
-// at index 0, so the fixture's level comes back under the other level's id
-// and every resource pinned to it by level_id is replaced. Plan 2/4 fixes
-// this; then the plan must show no changes.
-var characterizedReplacements = []string{
-	"dungeondraft_level.upper",
-	"dungeondraft_object.upper_object",
-}
-
-var replacementLine = regexp.MustCompile(`# (\S+) must be replaced`)
 
 // TestCharacterizeApplySaveReopenPlan pins today's end-to-end behavior: the
 // fixture applies, survives save and reopen with no drift, and destroys clean.
@@ -42,11 +25,10 @@ func TestCharacterizeApplySaveReopenPlan(t *testing.T) {
 	tf.run(t, "apply", "-auto-approve", "-input=false")
 	saveAndReopen(t, path)
 
-	code, plan := tf.output(t, "plan", "-detailed-exitcode", "-input=false")
-	if code != planHasChangesExit || !reflect.DeepEqual(replacedResources(plan), characterizedReplacements) {
-		t.Errorf("characterized: plan after save and reopen should replace exactly %v (level ids "+
-			"are renumbered on load); got exit %d replacing %v", characterizedReplacements, code,
-			replacedResources(plan))
+	code, _ := tf.output(t, "plan", "-detailed-exitcode", "-input=false")
+	if code != 0 {
+		t.Errorf("plan after save and reopen exited %d; want 0 (no changes): levels are "+
+			"identified by label, which Dungeondraft saves", code)
 	}
 
 	tf.run(t, "destroy", "-auto-approve", "-input=false")
@@ -86,15 +68,6 @@ func newTerraform(t *testing.T) terraform {
 	}
 	mirror, built := buildProvider(t)
 	return terraform{binary: binary, dir: dir, builtProvider: built, cliConfig: writeCLIConfig(t, mirror)}
-}
-
-func replacedResources(plan string) []string {
-	var replaced []string
-	for _, m := range replacementLine.FindAllStringSubmatch(plan, -1) {
-		replaced = append(replaced, m[1])
-	}
-	sort.Strings(replaced)
-	return replaced
 }
 
 func (tf terraform) run(t *testing.T, args ...string) {

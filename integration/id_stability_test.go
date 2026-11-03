@@ -28,18 +28,20 @@ func TestElementIDsSurviveSaveAndReopen(t *testing.T) {
 	elements := createOneOfEachKind(c, t)
 
 	before := describeAll(c, t, elements)
-	level := addLevel(c, t, "Upper")
+	addLevel(c, t, upperLevel)
+	if _, err := dd.Request(c, "add_light", map[string]any{"x": 100, "y": 100, "level": upperLevel}); err != nil {
+		t.Fatalf("add_light on %s: %v", upperLevel, err)
+	}
 	saveAndReopen(t, path)
 
+	// Level ids are renumbered by position on load; a level's identity is
+	// its label (spec, 2026-11-03), so the label and what is on it must survive.
 	t.Run("level", func(t *testing.T) {
-		label, found := levelLabels(ctx(t), t)[level.id]
-		switch {
-		case !found:
-			t.Errorf("level id %v no longer exists after reopen", level.id)
-		case label != level.label:
-			t.Skipf("characterized: level ids are renumbered by position on load, so id %v "+
-				"(was %q) now names %q — Terraform level identity needs a redesign (plan 2/4)",
-				level.id, level.label, label)
+		if n := labelCount(levelLabels(ctx(t), t), upperLevel); n != 1 {
+			t.Fatalf("%d levels are labelled %q after reopen, want 1", n, upperLevel)
+		}
+		if n := lightsOn(t, upperLevel); n != 1 {
+			t.Errorf("%s holds %d lights after reopen, want 1", upperLevel, n)
 		}
 	})
 
@@ -102,19 +104,21 @@ func createOneOfEachKind(c context.Context, t *testing.T) []createdElement {
 	return made
 }
 
-// levelLabel is a level's id and label, as list_levels reports them.
-type levelLabel struct {
-	id    string
-	label string
-}
-
-func addLevel(c context.Context, t *testing.T, label string) levelLabel {
+func addLevel(c context.Context, t *testing.T, label string) {
 	t.Helper()
-	res, err := dd.Request(c, "add_level", map[string]any{"label": label})
-	if err != nil {
+	if _, err := dd.Request(c, "add_level", map[string]any{"label": label}); err != nil {
 		t.Fatalf("add_level: %v", err)
 	}
-	return levelLabel{id: fmt.Sprint(res["id"]), label: label}
+}
+
+func labelCount(labels map[string]string, label string) int {
+	n := 0
+	for _, l := range labels {
+		if l == label {
+			n++
+		}
+	}
+	return n
 }
 
 func levelLabels(c context.Context, t *testing.T) map[string]string {
