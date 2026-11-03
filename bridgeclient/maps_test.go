@@ -17,6 +17,7 @@ func newTestClient(t *testing.T, fb *fakeBridge) *Client {
 	host, port := splitAddr(fb.addr())
 	c := New(host, port)
 	c.Timeout = 500 * time.Millisecond
+	c.ReplyTimeout = 500 * time.Millisecond
 	c.Attempts = 1
 	return c
 }

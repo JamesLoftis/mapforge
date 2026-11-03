@@ -196,10 +196,14 @@ func _handle_request(line : String):
 	# heartbeat ping, not a user command — consume it silently.
 	if not req.has("cmd"):
 		return
+	var resp
 	if req.has("map") and not _is_open_map(req["map"]):
-		_send(_err_code("wrong_map", "command is for %s but %s is open" % [str(req["map"]), _open_map_description()]))
-		return
-	var resp = _record_and_dispatch(req)
+		resp = _err_code("wrong_map", "command is for %s but %s is open" % [str(req["map"]), _open_map_description()])
+	else:
+		resp = _record_and_dispatch(req)
+	# bridge_app matches each reply to its request by req_id.
+	if req.has("req_id"):
+		resp["req_id"] = req["req_id"]
 	_send(resp)
 
 

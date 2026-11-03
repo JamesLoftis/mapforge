@@ -22,6 +22,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,6 +72,9 @@ type Client struct {
 	Port     int
 	Timeout  time.Duration // per-socket timeout for dial and reads
 	Attempts int           // transport retry count (>= 1)
+	// ReplyTimeout bounds one request's wait for its reply (the read
+	// deadline). It must exceed bridge_app's 30 s command timeout.
+	ReplyTimeout time.Duration
 	// MapFile, when set, rides on every command but ping as "map"; the mod
 	// refuses (wrong_map) any command while a different map is open.
 	MapFile string
@@ -105,7 +109,7 @@ type Client struct {
 
 // New returns a client for host:port with the defaults bridge_client.py used.
 func New(host string, port int) *Client {
-	return &Client{Host: host, Port: port, Timeout: 5 * time.Second, Attempts: 3}
+	return &Client{Host: host, Port: port, Timeout: 5 * time.Second, ReplyTimeout: 40 * time.Second, Attempts: 3}
 }
 
 // Request sends one command with optional params and returns the decoded result
@@ -120,6 +124,9 @@ func (c *Client) Request(ctx context.Context, cmd string, params map[string]any)
 	if c.MapFile != "" && cmd != "ping" {
 		payload["map"] = c.MapFile
 	}
+	// One id per logical request, reused on every transport retry, so
+	// bridge_app runs a retried command once and replays its reply.
+	payload["req_id"] = rand.Text()
 	buf, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("bridge request marshal: %w", err)
@@ -232,7 +239,7 @@ func (c *Client) roundTrip(ctx context.Context, cmd string, frame []byte) (map[s
 	if tcp, ok := conn.(*net.TCPConn); ok {
 		tcp.SetNoDelay(true)
 	}
-	_ = conn.SetDeadline(time.Now().Add(c.Timeout))
+	_ = conn.SetDeadline(time.Now().Add(c.replyTimeout()))
 
 	if _, err := conn.Write(frame); err != nil {
 		return nil, &Unreachable{Err: fmt.Errorf("writing request: %w", err)}
@@ -257,6 +264,14 @@ func (c *Client) roundTrip(ctx context.Context, cmd string, frame []byte) (map[s
 	}
 	result, _ := decoded["result"].(map[string]any)
 	return result, nil
+}
+
+// replyTimeout falls back to Timeout for a Client built without New.
+func (c *Client) replyTimeout() time.Duration {
+	if c.ReplyTimeout > 0 {
+		return c.ReplyTimeout
+	}
+	return c.Timeout
 }
 
 // readLine reads until a newline (reassembling multi-segment replies).

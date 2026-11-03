@@ -112,8 +112,9 @@ type frame struct {
 
 // job is a user command queued for the serialized agent pipeline.
 type job struct {
-	req  frame
-	conn *wireConn
+	req     frame
+	conn    *wireConn
+	request *pendingRequest // nil when the client sent no req_id
 }
 
 // wireConn is a live client (agent or user).
@@ -148,6 +149,7 @@ type Bridge struct {
 	hbTimeout    time.Duration
 	writeTimeout time.Duration
 	jobs         chan job
+	requests     *requestTable
 	startAt      time.Time
 
 	mu         sync.Mutex
@@ -177,6 +179,7 @@ func New(o Options) *Bridge {
 		hbTimeout:    o.AgentTimeout,
 		writeTimeout: o.WriteTimeout,
 		jobs:         make(chan job, 64),
+		requests:     newRequestTable(),
 		conns:        map[int64]*wireConn{},
 		startAt:      time.Now(),
 	}
@@ -228,9 +231,11 @@ func (b *Bridge) agentPump(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case jb := <-b.jobs:
-			if jb.conn.closed.Load() {
+			if jb.request == nil && jb.conn.closed.Load() {
 				continue // the user went away; nothing to answer
 			}
+			// With a req_id the job runs even if its user left: that user's
+			// retry is waiting on this request's reply.
 			b.relay(ctx, jb)
 		}
 	}
@@ -240,12 +245,12 @@ func (b *Bridge) agentPump(ctx context.Context) {
 func (b *Bridge) relay(ctx context.Context, jb job) {
 	agent, proto := b.agentLive()
 	if agent == nil {
-		b.respond(jb.conn, offlineReply())
+		b.answerUnsent(jb, offlineReply())
 		b.statsRejectOffline(jb.req)
 		return
 	}
 	if proto != PROTOCOL_VERSION {
-		b.respond(jb.conn, errorReply(codeProtocolMismatch, fmt.Sprintf(
+		b.answerUnsent(jb, errorReply(codeProtocolMismatch, fmt.Sprintf(
 			"Dungeondraft's mod speaks protocol v%d, bridge_app v%d; restart Dungeondraft so it loads the current mod",
 			proto, PROTOCOL_VERSION)))
 		b.statsRecord(jb.req, nil)
@@ -260,30 +265,80 @@ func (b *Bridge) relay(ctx context.Context, jb job) {
 	agent.rwmu.Unlock()
 	if werr != nil {
 		b.dropAgent(agent, "socket write failed: "+werr.Error())
-		b.respond(jb.conn, offlineReply())
+		b.answerUnsent(jb, offlineReply())
 		b.statsRejectOffline(jb.req)
 		return
 	}
+	b.awaitReply(ctx, jb, agent)
+}
 
-	select {
-	case resp := <-agent.respCh:
-		if b.opts.Verbose {
-			b.logf("<- agent %s", strings.TrimSpace(string(resp.raw)))
+// awaitReply relays the agent's reply to jb, skipping any reply that names
+// another request (a late answer to one that already timed out).
+func (b *Bridge) awaitReply(ctx context.Context, jb job, agent *wireConn) {
+	timeout := time.NewTimer(b.cmdTimeout)
+	defer timeout.Stop()
+	for {
+		select {
+		case resp := <-agent.respCh:
+			if b.opts.Verbose {
+				b.logf("<- agent %s", strings.TrimSpace(string(resp.raw)))
+			}
+			if !repliesTo(resp, jb) {
+				b.logf("discarding agent reply for another request: %s", strings.TrimSpace(string(resp.raw)))
+				continue
+			}
+			b.answerRaw(jb, resp.raw)
+			b.statsRecord(jb.req, resp.raw)
+		case <-timeout.C:
+			b.dropAgent(agent, "no reply within "+b.cmdTimeout.String())
+			b.answer(jb, errorReply(codeTimeout, "bridge timed out waiting for Dungeondraft"))
+			b.statsRecord(jb.req, nil)
+		case <-agent.gone:
+			b.answer(jb, errorReply(codeAgentLost, fmt.Sprintf(
+				"Dungeondraft's bridge agent went away while running %s; it may or may not have run",
+				fstring(jb.req.parsed, "cmd"))))
+			b.statsRecord(jb.req, nil)
+		case <-ctx.Done():
 		}
-		b.respondRaw(jb.conn, resp.raw)
-		b.statsRecord(jb.req, resp.raw)
-	case <-time.After(b.cmdTimeout):
-		b.dropAgent(agent, "no reply within "+b.cmdTimeout.String())
-		b.respond(jb.conn, errorReply(codeTimeout, "bridge timed out waiting for Dungeondraft"))
-		b.statsRecord(jb.req, nil)
-	case <-agent.gone:
-		b.respond(jb.conn, errorReply(codeAgentLost, fmt.Sprintf(
-			"Dungeondraft's bridge agent went away while running %s; it may or may not have run",
-			fstring(jb.req.parsed, "cmd"))))
-		b.statsRecord(jb.req, nil)
-	case <-ctx.Done():
 		return
 	}
+}
+
+// repliesTo reports whether resp answers jb. A reply without req_id (or a
+// request without one) cannot be told apart and is accepted.
+func repliesTo(resp frame, jb job) bool {
+	got := fstring(resp.parsed, "req_id")
+	return jb.request == nil || got == "" || got == jb.request.id
+}
+
+// answer replies to jb's user and, for a request Dungeondraft received,
+// keeps the reply for any retry of the same req_id.
+func (b *Bridge) answer(jb job, resp map[string]any) {
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		return
+	}
+	b.answerRaw(jb, raw)
+}
+
+func (b *Bridge) answerRaw(jb job, raw []byte) {
+	if jb.request != nil {
+		b.requests.finish(jb.request, raw, time.Now())
+	}
+	b.respondRaw(jb.conn, raw)
+}
+
+// answerUnsent replies for a request that never reached Dungeondraft, so a
+// retry of it runs rather than replaying this answer.
+func (b *Bridge) answerUnsent(jb job, resp map[string]any) {
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		return
+	}
+	if jb.request != nil {
+		b.requests.forget(jb.request, raw)
+	}
+	b.respondRaw(jb.conn, raw)
 }
 
 // ---------------------------------------------------------------------------
@@ -388,12 +443,30 @@ func (b *Bridge) routeFrame(ctx context.Context, wc *wireConn, fr frame) bool {
 		return false
 	}
 
+	jb := job{req: fr, conn: wc}
+	if id := fstring(fr.parsed, "req_id"); id != "" {
+		request, isRepeat := b.requests.join(id, time.Now())
+		if isRepeat {
+			go b.replay(ctx, wc, request)
+			return false
+		}
+		jb.request = request
+	}
 	select {
-	case b.jobs <- job{req: fr, conn: wc}:
+	case b.jobs <- jb:
 	case <-ctx.Done():
 		return true
 	}
 	return false
+}
+
+// replay answers a repeated request with the original's reply once it has one.
+func (b *Bridge) replay(ctx context.Context, wc *wireConn, request *pendingRequest) {
+	select {
+	case <-request.done:
+		b.respondRaw(wc, request.reply)
+	case <-ctx.Done():
+	}
 }
 
 func (b *Bridge) register(nc net.Conn) *wireConn {

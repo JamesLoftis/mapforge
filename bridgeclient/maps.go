@@ -107,17 +107,21 @@ func (c *Client) WaitMapOp(ctx context.Context, op, path string, timeout time.Du
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	var lastSeen MapStatus
 	var lastErr error
 	for {
 		st, err := c.Status(ctx)
 		if err == nil && st.LastMapOp.isDone(op, path) && !st.Busy {
 			return st.LastMapOp.failure()
 		}
+		if err == nil {
+			lastSeen = st
+		}
 		lastErr = err
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%s \"%s\" timed out after %s (last status error: %v)",
-				op, path, time.Since(start).Round(time.Millisecond), lastErr)
+			return fmt.Errorf("%s \"%s\" timed out after %s (last seen: op %+v, busy %t; last status error: %v)",
+				op, path, time.Since(start).Round(time.Millisecond), lastSeen.LastMapOp, lastSeen.Busy, lastErr)
 		case <-time.After(mapOpPollInterval):
 		}
 	}

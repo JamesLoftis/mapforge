@@ -32,6 +32,12 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ### Fixed
 
+- A client that timed out on a queued edit and retried it created a
+  duplicate element. Requests carry a `req_id`; `bridge_app` runs each once
+  and replays its reply to retries, and matches agent replies by `req_id`.
+  The client's reply deadline is now 40 s (past bridge_app's 30 s command
+  timeout) instead of 5 s.
+
 - `bridge_app` waited out its 30 s command timeout on a dead agent after
   Dungeondraft restarted its scene (`new_map`, `open_map`): the request now
   fails at once with `agent_lost`, so those ops take about a second.

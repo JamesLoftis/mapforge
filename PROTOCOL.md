@@ -52,6 +52,13 @@ diagnosable at a glance (see `bridge_app/` for the health page and `/health`).
 ```
 
 - `cmd` (string, required) — the command name.
+- `req_id` (string, optional) — one id per logical request, reused when a
+  client retries it. `bridge_app` runs a request once per `req_id`: a repeat
+  while it runs waits for it, and a repeat within 2 minutes after gets the
+  same reply. Answers for a request that never reached Dungeondraft
+  (`offline`, `protocol_mismatch`) are not remembered, so a retry runs. The
+  mod copies `req_id` into its reply, and `bridge_app` ignores an agent reply
+  whose `req_id` names another request.
 - `map` (string, optional) — the absolute path of the map this command is
   for. When present, the mod compares it with the open map's file
   (case-insensitive, either slash) and refuses the command with code

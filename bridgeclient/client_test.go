@@ -115,6 +115,7 @@ func TestClosedWithoutReplyTimesOut(t *testing.T) {
 	host, port := splitAddr(fb.addr())
 	c := New(host, port)
 	c.Timeout = 300 * time.Millisecond
+	c.ReplyTimeout = 300 * time.Millisecond
 	c.Attempts = 1
 	_, err := c.Request(context.Background(), "get_status", nil)
 	if err == nil {
