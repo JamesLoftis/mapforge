@@ -11,9 +11,14 @@ terraform {
   }
 }
 
+variable "bridge_port" {
+  type    = number
+  default = 8787
+}
+
 provider "dungeondraft" {
   host = "127.0.0.1"
-  port = 8787
+  port = var.bridge_port
 }
 
 data "dungeondraft_assets" "object" {

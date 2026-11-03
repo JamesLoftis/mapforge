@@ -31,11 +31,27 @@ import (
 )
 
 // Error is raised when the bridge itself rejects a request (app-level error, never retried).
+// Code is the reply's machine-readable reason, "" when it gave none.
 type Error struct {
-	Msg string
+	Msg  string
+	Code string
 }
 
 func (e *Error) Error() string { return e.Msg }
+
+// Error codes (PROTOCOL.md, Errors). Branch on these, never on message text.
+const (
+	CodeOffline  = "offline"
+	CodeTimeout  = "timeout"
+	CodeNotFound = "not_found"
+)
+
+// IsNotFound reports whether err is the bridge saying the element does not
+// exist — the only answer that means an element is gone.
+func IsNotFound(err error) bool {
+	var appErr *Error
+	return errors.As(err, &appErr) && appErr.Code == CodeNotFound
+}
 
 // Unreachable wraps a transport-level failure that prevented talking to the bridge.
 type Unreachable struct {
@@ -229,7 +245,8 @@ func (c *Client) roundTrip(ctx context.Context, cmd string, frame []byte) (map[s
 		if msg == "" {
 			msg = "unknown bridge error"
 		}
-		return nil, &Error{Msg: fmt.Sprintf("bridge rejected %s: %s", cmd, msg)}
+		code, _ := decoded["code"].(string)
+		return nil, &Error{Msg: fmt.Sprintf("bridge rejected %s: %s", cmd, msg), Code: code}
 	}
 	result, _ := decoded["result"].(map[string]any)
 	return result, nil

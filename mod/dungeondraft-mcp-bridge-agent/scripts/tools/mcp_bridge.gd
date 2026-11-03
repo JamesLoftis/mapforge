@@ -25,7 +25,7 @@ var script_class = "tool"
 
 const HOST := "127.0.0.1"
 const PORT := 8787
-const PROTOCOL_VERSION := 18
+const PROTOCOL_VERSION := 19
 const MAP_EXTENSION := ".dungeondraft_map"
 # Opening or creating a map restarts Dungeondraft's scene, which frees this
 # mod and loads a fresh instance on the new map, so the map op in flight is
@@ -923,7 +923,7 @@ func _wall_centroid(wall):
 func _get_element(req : Dictionary) -> Dictionary:
 	var node = _resolve(req)
 	if node == null:
-		return _err("no element with id " + str(req.get("id")))
+		return _not_found(req)
 	return _ok(_describe(node))
 
 
@@ -1778,7 +1778,7 @@ func _point_in_poly(pt : Vector2, poly : Array) -> bool:
 
 func _move_element(req : Dictionary) -> Dictionary:
 	var node = _resolve(req)
-	if node == null: return _err("no element with id " + str(req.get("id")))
+	if node == null: return _not_found(req)
 	if _is_text(node):
 		node.rect_position = _xy(req, node.rect_position)
 		return _ok({ "id": req.get("id"), "position": _vec(node.rect_position) })
@@ -1789,7 +1789,7 @@ func _move_element(req : Dictionary) -> Dictionary:
 
 func _modify_object(req : Dictionary) -> Dictionary:
 	var node = _resolve(req)
-	if node == null: return _err("no element with id " + str(req.get("id")))
+	if node == null: return _not_found(req)
 	if req.has("scale"):
 		var s = _num(req["scale"], 1.0); node.scale = Vector2(s, s)
 	if req.has("rotation"):
@@ -1805,7 +1805,7 @@ func _duplicate_object(req : Dictionary) -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null: return _err("no map open")
 	var src = _resolve(req)
-	if src == null: return _err("no element with id " + str(req.get("id")))
+	if src == null: return _not_found(req)
 	if src.get("Texture") == null: return _err("element has no Texture to duplicate")
 	var prop = level.Objects.CreateObject(0)
 	_mark_placed(prop)
@@ -1936,7 +1936,7 @@ func _focus_element(req : Dictionary) -> Dictionary:
 	var cam = _camera()
 	if cam == null: return _err("camera not available")
 	var node = _resolve(req)
-	if node == null: return _err("no element with id " + str(req.get("id")))
+	if node == null: return _not_found(req)
 	var pos = _element_position(node)
 	if pos == null: return _err("element has no position to focus")
 	cam.global_position = pos
@@ -2287,6 +2287,16 @@ func _ok(result) -> Dictionary:
 
 func _err(msg) -> Dictionary:
 	return { "ok": false, "error": msg }
+
+
+# A coded error: callers branch on `code`, never on the message text.
+func _err_code(code : String, msg : String) -> Dictionary:
+	return { "ok": false, "error": msg, "code": code }
+
+
+# The only answer that means an element is gone (see PROTOCOL.md, Errors).
+func _not_found(req : Dictionary) -> Dictionary:
+	return _err_code("not_found", "no element with id " + str(req.get("id")))
 
 
 func _register_tool():

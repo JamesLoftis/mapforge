@@ -22,7 +22,16 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
   `save_map` checks the file was written and reports `last_map_op.error`
   when it was not; Dungeondraft itself only logs a failed write.
 
+### Changed
+
+- Protocol v19: error replies carry a machine-readable `code` (`offline`,
+  `timeout`, `not_found`); see PROTOCOL.md, Error codes.
+
 ### Fixed
+
+- A Terraform refresh while Dungeondraft was offline or slow dropped every
+  element it read from state. Only a `not_found` answer now means an element
+  is gone; any other failure is an error and state is left alone.
 
 - Objects placed or duplicated through the bridge were silently left out of
   every save: Dungeondraft's `Objects.Save()` skips a prop without the

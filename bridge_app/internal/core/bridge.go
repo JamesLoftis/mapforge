@@ -20,7 +20,7 @@ import (
 )
 
 // PROTOCOL_VERSION is the wire protocol version, mirrored from the mod.
-const PROTOCOL_VERSION = 18
+const PROTOCOL_VERSION = 19
 
 // AgentTimeout is how long a silent agent socket lingers before the bridge
 // reports the map as offline (agent heartbeats every ~5s).
@@ -30,13 +30,21 @@ const AgentTimeout = 20 * time.Second
 // agent's reply (long-but-bounded; export_map takes a few seconds).
 const CommandTimeout = 30 * time.Second
 
+// Error codes bridge_app itself answers with (PROTOCOL.md, Errors).
+const (
+	codeOffline = "offline"
+	codeTimeout = "timeout"
+)
+
+// errorReply is a failed answer carrying a machine-readable code.
+func errorReply(code, message string) map[string]any {
+	return map[string]any{"ok": false, "error": message, "code": code}
+}
+
 // offlineReply is the answer to any non-ping command while DD's agent is not
 // connected — a clear, structured reason instead of a dead port.
 func offlineReply() map[string]any {
-	return map[string]any{
-		"ok":    false,
-		"error": "dungeondraft offline: bridge agent not connected",
-	}
+	return errorReply(codeOffline, "dungeondraft offline: bridge agent not connected")
 }
 
 // Options tunes the bridge.
@@ -140,12 +148,12 @@ func New(o Options) *Bridge {
 		o.CommandTimeout = CommandTimeout
 	}
 	return &Bridge{
-		opts:      o,
+		opts:       o,
 		cmdTimeout: o.CommandTimeout,
 		hbTimeout:  o.AgentTimeout,
-		jobs:      make(chan job, 64),
-		conns:     map[int64]*wireConn{},
-		startAt:   time.Now(),
+		jobs:       make(chan job, 64),
+		conns:      map[int64]*wireConn{},
+		startAt:    time.Now(),
 	}
 }
 
@@ -234,10 +242,7 @@ func (b *Bridge) relay(ctx context.Context, jb job) {
 		b.statsRecord(jb.req, resp.raw)
 	case <-time.After(b.cmdTimeout):
 		b.dropAgent(agent, "no reply within "+b.cmdTimeout.String())
-		b.respond(jb.conn, map[string]any{
-			"ok":    false,
-			"error": "bridge timed out waiting for Dungeondraft",
-		})
+		b.respond(jb.conn, errorReply(codeTimeout, "bridge timed out waiting for Dungeondraft"))
 		b.statsRecord(jb.req, nil)
 	case <-ctx.Done():
 		return

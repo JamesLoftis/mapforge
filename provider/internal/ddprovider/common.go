@@ -2,7 +2,6 @@ package ddprovider
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -85,34 +84,53 @@ func coerceUnknownToNull(m any) {
 // deleteNode calls delete_element for a numeric resource id (destructive and
 // not undo-able on the bridge, matching PROTOCOL.md).
 func deleteNode(ctx context.Context, c *bridge.Client, idStr string) diag.Diagnostics {
-	id, _ := strconv.ParseInt(idStr, 10, 64)
+	id, diags := parseElementID(idStr)
+	if diags.HasError() {
+		return diags
+	}
 	if _, err := c.Request(ctx, "delete_element", map[string]any{"id": id}); err != nil {
-		return diagErrf("Failed to delete element %s", "%v", err)
+		return diagErrf("Failed to delete element "+idStr, "%v", err)
 	}
 	return nil
 }
 
-// fetchNode returns the element's descriptor (get_element). exists=false when
-// the bridge rejects the lookup (gone), with transport errors propagated.
+// fetchNode returns the element's descriptor (get_element). exists=false only
+// when the bridge answers not_found; every other failure (Dungeondraft
+// offline, timed out, another map open) is an error that leaves state alone.
 func fetchNode(ctx context.Context, c *bridge.Client, idStr string) (map[string]any, bool, diag.Diagnostics) {
-	id, _ := strconv.ParseInt(idStr, 10, 64)
+	id, diags := parseElementID(idStr)
+	if diags.HasError() {
+		return nil, false, diags
+	}
 	res, err := c.Request(ctx, "get_element", map[string]any{"id": id})
-	if err == nil {
+	switch {
+	case err == nil:
 		return res, true, nil
+	case bridge.IsNotFound(err):
+		return nil, false, nil
+	default:
+		return nil, false, diagErrf("Failed to read element "+idStr, "%v", err)
 	}
-	var appErr *bridge.Error
-	if errors.As(err, &appErr) {
-		return nil, false, nil // gone (or not addressable): Terraform removes it
+}
+
+// parseElementID turns a resource id back into the bridge's numeric id.
+func parseElementID(idStr string) (int64, diag.Diagnostics) {
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		return 0, diagErrf("Invalid element id "+idStr, "resource id %q is not a Dungeondraft element id: %v", idStr, err)
 	}
-	return nil, false, diagErrf("Failed to read element %s", "%v", err)
+	return id, nil
 }
 
 // moveNode shifts a node in place (move_element works for any node kind);
 // used for positional in-place updates where supported.
 func moveNode(ctx context.Context, c *bridge.Client, idStr string, x, y float64) diag.Diagnostics {
-	id, _ := strconv.ParseInt(idStr, 10, 64)
+	id, diags := parseElementID(idStr)
+	if diags.HasError() {
+		return diags
+	}
 	if _, err := c.Request(ctx, "move_element", map[string]any{"id": id, "x": x, "y": y}); err != nil {
-		return diagErrf("Failed to move element %s", "%v", err)
+		return diagErrf("Failed to move element "+idStr, "%v", err)
 	}
 	return nil
 }
@@ -123,7 +141,10 @@ func moveNode(ctx context.Context, c *bridge.Client, idStr string, x, y float64)
 // means "this field didn't change in the plan," and is omitted so the bridge
 // leaves it alone rather than resetting it.
 func modifyObjectNode(ctx context.Context, c *bridge.Client, idStr string, scale, rotation *float64, color *string) diag.Diagnostics {
-	id, _ := strconv.ParseInt(idStr, 10, 64)
+	id, diags := parseElementID(idStr)
+	if diags.HasError() {
+		return diags
+	}
 	params := map[string]any{"id": id}
 	if scale != nil {
 		params["scale"] = *scale
@@ -135,7 +156,7 @@ func modifyObjectNode(ctx context.Context, c *bridge.Client, idStr string, scale
 		params["color"] = *color
 	}
 	if _, err := c.Request(ctx, "modify_object", params); err != nil {
-		return diagErrf("Failed to modify element %s", "%v", err)
+		return diagErrf("Failed to modify element "+idStr, "%v", err)
 	}
 	return nil
 }

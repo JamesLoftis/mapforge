@@ -25,10 +25,10 @@ first frame:
   Only one agent may be connected; a new `agent_hello` supersedes the old socket.
 
   ```json
-  { "agent_hello": { "name": "mcp_bridge_mod", "protocol": 18 } }
+  { "agent_hello": { "name": "mcp_bridge_mod", "protocol": 19 } }
   ```
 
-  → `{ "ok": true, "result": { "agent": "registered", "protocol": 18 } }`
+  → `{ "ok": true, "result": { "agent": "registered", "protocol": 19 } }`
 
   The agent **never replies to** `ping` — a `{"cmd":"ping"}` sent from the agent
   side is a heartbeat, answered by the app and consumed by the agent.
@@ -39,7 +39,7 @@ first frame:
 With no agent connected, every *user* command except `ping` is answered with:
 
 ```json
-{ "ok": false, "error": "dungeondraft offline: bridge agent not connected" }
+{ "ok": false, "error": "dungeondraft offline: bridge agent not connected", "code": "offline" }
 ```
 
 A plain structured reason — not a dead port — so a crashed/absent mod is
@@ -68,6 +68,17 @@ Error:
 ```json
 { "ok": false, "error": "no map open", "id": 7 }
 ```
+
+### Error codes
+
+An error may carry `code`, a machine-readable reason. Callers branch on `code`,
+never on the message text. An error without a code is still an error.
+
+| code | sent by | meaning |
+| --- | --- | --- |
+| `offline` | bridge_app | no Dungeondraft agent is connected |
+| `timeout` | bridge_app | the agent did not reply within the command timeout |
+| `not_found` | mod | no element with the given `id`. The **only** answer that means an element is gone |
 
 ## Commands
 
