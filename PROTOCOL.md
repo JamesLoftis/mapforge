@@ -25,10 +25,10 @@ first frame:
   Only one agent may be connected; a new `agent_hello` supersedes the old socket.
 
   ```json
-  { "agent_hello": { "name": "mcp_bridge_mod", "protocol": 17 } }
+  { "agent_hello": { "name": "mcp_bridge_mod", "protocol": 18 } }
   ```
 
-  → `{ "ok": true, "result": { "agent": "registered", "protocol": 17 } }`
+  → `{ "ok": true, "result": { "agent": "registered", "protocol": 18 } }`
 
   The agent **never replies to** `ping` — a `{"cmd":"ping"}` sent from the agent
   side is a heartbeat, answered by the app and consumed by the agent.
@@ -80,7 +80,7 @@ Coordinates are **woxel** (world pixel) space; map center is in
 | cmd | params | result |
 | --- | --- | --- |
 | `ping` | — | `{ pong, protocol, app, dd_connected }` — answered by the app itself; `dd_connected` false when no agent is linked |
-| `get_status` | — | `{ map_open, level_id, level_count, map_size_woxels, map_center, counts{}, active_tool }` |
+| `get_status` | — | `{ map_open, level_id, level_count, map_size_woxels, map_center, counts{}, active_tool, busy, map_file, last_map_op }` — the last three are present even with no map open; see Map lifecycle |
 | `list_asset_categories` | — | `{ categories[] }` |
 | `list_assets` | `category="Objects"`, `search=""`, `limit=100` | `{ category, total, matched, returned, assets[] }` |
 | `list_elements` | `kind="objects"`, `limit=200` | `{ kind, count, elements[] }` |
@@ -184,6 +184,31 @@ from compositing, so the frame can go stale there — for a capture that works
 while DD is minimized, render the map with `export_map` instead (background
 thread, headless).
 | `export_map` | `path`, `ppi=40` | `{ path, ppi, async }` — full-map render on a background thread; poll `path` for the file |
+
+### Map lifecycle
+
+All three are asynchronous: the reply `{ started: true }` means Dungeondraft
+accepted the command. Completion shows in `get_status`:
+
+- `busy` — Dungeondraft's own `Master.IsBusy`: saving, backing up, exporting,
+  closing, or computing caves/water.
+- `map_file` — the open map's file path, `""` when it has never been saved.
+- `last_map_op` — `{ op, path, done }` for the most recent of these commands
+  (`path` is `""` for `new_map`), or `{}` before the first one.
+
+| cmd | params | result |
+| --- | --- | --- |
+| `new_map` | `width`, `height` — tiles, required whole numbers ≥ 1 | `{ started }` — replaces the open map with a blank one |
+| `open_map` | `path` — required absolute path to an existing `.dungeondraft_map` | `{ started }` |
+| `save_map` | `path` — required absolute path ending `.dungeondraft_map` | `{ started }` — also makes `path` the map's current file |
+
+Each fails with `ok: false` on a missing or invalid param, and with an error
+starting `busy:` while `busy` is true. `save_map` fails with `no
+map open` when there is none. `new_map` and `open_map` restart Dungeondraft's
+scene, so the mod disconnects and reconnects; requests in that window get the
+app's offline error. `save_map`/`open_map` call `Master.Save`/`Master.Load`
+directly, so they skip the GUI's file dialogs and recent-maps list; `new_map`
+drives the New window (it remembers the size given).
 
 ### Camera
 

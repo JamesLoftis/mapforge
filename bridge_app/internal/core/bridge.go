@@ -20,7 +20,7 @@ import (
 )
 
 // PROTOCOL_VERSION is the wire protocol version, mirrored from the mod.
-const PROTOCOL_VERSION = 17
+const PROTOCOL_VERSION = 18
 
 // AgentTimeout is how long a silent agent socket lingers before the bridge
 // reports the map as offline (agent heartbeats every ~5s).

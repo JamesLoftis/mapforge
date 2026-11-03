@@ -81,7 +81,7 @@ func startDetachedLogged(path string, extraArgs []string, ddLog string) error {
 // logsDirectory returns (creating if needed) the shared log directory next
 // to the installed binaries' data root.
 func logsDirectory() (string, error) {
-	base, err := os.UserConfigDir() // %LOCALAPPDATA% on Windows
+	base, err := os.UserConfigDir() // %APPDATA% on Windows
 	if err != nil {
 		return "", err
 	}

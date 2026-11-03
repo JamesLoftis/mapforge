@@ -25,7 +25,12 @@ var script_class = "tool"
 
 const HOST := "127.0.0.1"
 const PORT := 8787
-const PROTOCOL_VERSION := 17
+const PROTOCOL_VERSION := 18
+const MAP_EXTENSION := ".dungeondraft_map"
+# Opening or creating a map restarts Dungeondraft's scene, which frees this
+# mod and loads a fresh instance on the new map, so the map op in flight is
+# kept on the Engine singleton (it survives the restart), not in a var.
+const MAP_OP_META := "mcp_bridge_map_op"
 
 # Commands that get wrapped in a Dungeondraft undo record (see _record_and_dispatch).
 const CREATE_CMDS := [
@@ -82,6 +87,8 @@ var _label : Label = null        # tool-panel label, refreshed with live status
 
 func start():
 	_register_tool()
+	_watch_saves()
+	_finish_restarting_map_op()
 	_connect_socket()
 	print("[mcp-bridge] agent mode: bridging to tcp://%s:%d (protocol v%d)" % [HOST, PORT, PROTOCOL_VERSION])
 
@@ -391,6 +398,10 @@ func _safe_dispatch(req : Dictionary) -> Dictionary:
 		# --- read / query ---
 		"ping": return _ok({ "pong": true, "protocol": PROTOCOL_VERSION, "mod_version": _mod_version(), "engine": Engine.get_version_info() })
 		"get_status": return _get_status()
+		# --- map lifecycle (asynchronous; completion shows in get_status) ---
+		"new_map": return _new_map(req)
+		"open_map": return _open_map(req)
+		"save_map": return _save_map(req)
 		"list_asset_categories": return _ok({ "categories": ASSET_CATEGORIES })
 		"list_assets": return _list_assets(req)
 		"list_elements": return _list_elements(req)
@@ -454,7 +465,9 @@ const ASSET_CATEGORIES := [
 func _get_status() -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null:
-		return _ok({ "map_open": false, "mod_version": _mod_version() })
+		var closed := { "map_open": false, "mod_version": _mod_version() }
+		_add_map_lifecycle_status(closed)
+		return _ok(closed)
 	var counts := {}
 	for kind in COLLECTIONS:
 		counts[kind] = _collection(level, kind).get_child_count()
@@ -462,7 +475,7 @@ func _get_status() -> Dictionary:
 	# (the common case) live inside each wall's own `Portals` array instead —
 	# see _list_elements' handling of kind == "portals" for the same fix.
 	counts["portals"] += _wall_portal_count(level)
-	return _ok({
+	var status := {
 		"map_open": true,
 		"mod_version": _mod_version(),
 		"level_id": Global.World.CurrentLevelId,
@@ -471,7 +484,133 @@ func _get_status() -> Dictionary:
 		"map_center": [Global.World.WoxelDimensions.x * 0.5, Global.World.WoxelDimensions.y * 0.5],
 		"counts": counts,
 		"active_tool": Global.Editor.ActiveToolName,
-	})
+	}
+	_add_map_lifecycle_status(status)
+	return _ok(status)
+
+
+# Godot 3.4 has no Dictionary.merge, hence filling the caller's status in place.
+func _add_map_lifecycle_status(status : Dictionary) -> void:
+	var map_file = Global.Editor.CurrentMapFile
+	status["busy"] = _is_dungeondraft_busy()
+	status["map_file"] = map_file if map_file != null else ""
+	status["last_map_op"] = Engine.get_meta(MAP_OP_META) if Engine.has_meta(MAP_OP_META) else {}
+
+
+# ---------------------------------------------------------------------------
+# Map lifecycle: new_map / open_map / save_map
+#
+# Mods get no Global handle to Dungeondraft's Master, but it is the scene
+# root's "Master" node, and its static members (IsBusy, Save, Load) are
+# reachable through it.
+# ---------------------------------------------------------------------------
+
+func _master() -> Node:
+	return Global.Editor.get_tree().root.get_node("Master")
+
+
+# Saving, backing up, exporting, closing, or computing caves/water.
+func _is_dungeondraft_busy() -> bool:
+	return bool(_master().get("IsBusy"))
+
+
+# Master.Save takes a C# Action GDScript cannot build, so save completion
+# comes from the Editor's OnSaveEnd signal instead.
+func _watch_saves() -> void:
+	Global.Editor.connect("OnSaveEnd", self, "_on_save_end")
+
+
+func _on_save_end() -> void:
+	_mark_map_op_done("save_map")
+
+
+# Runs on every mod start. open_map/new_map restart Dungeondraft's scene and
+# the mod starts again on the new map, which is the moment that op is done.
+# Load sets the opened file on the editor it is replacing, so it is set
+# again here on the new one.
+func _finish_restarting_map_op() -> void:
+	if not Engine.has_meta(MAP_OP_META):
+		return
+	var op : Dictionary = Engine.get_meta(MAP_OP_META)
+	if op.done:
+		return
+	if op.op == "open_map" and Global.Editor.CurrentMapFile != op.path:
+		Global.Editor.OnOpenedOrSaved(op.path)
+	_mark_map_op_done(op.op)
+
+
+func _begin_map_op(op : String, path : String) -> void:
+	Engine.set_meta(MAP_OP_META, { "op": op, "path": path, "done": false })
+
+
+func _mark_map_op_done(op : String) -> void:
+	if not Engine.has_meta(MAP_OP_META):
+		return
+	var current : Dictionary = Engine.get_meta(MAP_OP_META)
+	if current.op == op and not current.done:
+		current.done = true
+		Engine.set_meta(MAP_OP_META, current)
+
+
+# Master.CreateNewMap only works with no map open; with one open, the New
+# window queues a C# NewMapOnStart and restarts the scene. GDScript cannot
+# build that object, so this drives the New window itself.
+func _new_map(req : Dictionary) -> Dictionary:
+	var width = req.get("width")
+	var height = req.get("height")
+	if not (_is_whole_number_at_least_one(width) and _is_whole_number_at_least_one(height)):
+		return _err("new_map needs width and height: whole numbers of tiles, at least 1 (got %s x %s)" % [str(width), str(height)])
+	if _is_dungeondraft_busy():
+		return _err("busy: Dungeondraft is saving, backing up, exporting or computing")
+	var window = Global.Editor.Windows["New"]
+	var width_box = window.get_node(window.get("widthBoxPath"))
+	var height_box = window.get_node(window.get("heightBoxPath"))
+	width_box.value = width
+	height_box.value = height
+	if int(width_box.value) != int(width) or int(height_box.value) != int(height):
+		return _err("new_map size %d x %d is outside Dungeondraft's range %d..%d" % [int(width), int(height), int(width_box.min_value), int(width_box.max_value)])
+	window.get_node(window.get("mapWizardPath")).pressed = false
+	_begin_map_op("new_map", "")
+	window.call("_on_OkayButton_pressed")
+	return _ok({ "started": true })
+
+
+func _open_map(req : Dictionary) -> Dictionary:
+	var path = req.get("path")
+	if not _is_map_file_path(path):
+		return _err("open_map needs path: an absolute path ending in %s (got %s)" % [MAP_EXTENSION, str(path)])
+	if not File.new().file_exists(path):
+		return _err("open_map: no map file at " + path)
+	if _is_dungeondraft_busy():
+		return _err("busy: Dungeondraft is saving, backing up, exporting or computing")
+	_begin_map_op("open_map", path)
+	_master().call("Load", path, null)
+	return _ok({ "started": true })
+
+
+func _save_map(req : Dictionary) -> Dictionary:
+	var path = req.get("path")
+	if not _is_map_file_path(path):
+		return _err("save_map needs path: an absolute path ending in %s (got %s)" % [MAP_EXTENSION, str(path)])
+	if Global.World.GetCurrentLevel() == null:
+		return _err("no map open")
+	if _is_dungeondraft_busy():
+		return _err("busy: Dungeondraft is saving, backing up, exporting or computing")
+	_begin_map_op("save_map", path)
+	_master().call("Save", path, null)
+	# As the GUI does after a save: the map's current file becomes path.
+	Global.Editor.OnOpenedOrSaved(path)
+	return _ok({ "started": true })
+
+
+func _is_map_file_path(path) -> bool:
+	return typeof(path) == TYPE_STRING and path.is_abs_path() and path.ends_with(MAP_EXTENSION)
+
+
+func _is_whole_number_at_least_one(value) -> bool:
+	if typeof(value) != TYPE_INT and typeof(value) != TYPE_REAL:
+		return false
+	return value >= 1 and value == floor(value)
 
 
 # Wall-mounted portals (the common case for doors/windows) aren't level

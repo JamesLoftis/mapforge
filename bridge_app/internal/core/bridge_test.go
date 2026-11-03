@@ -74,7 +74,7 @@ func (cl *client) recv(t *testing.T) map[string]any {
 func helloAgent(t *testing.T, addr string) *client {
 	t.Helper()
 	cl := dial(t, addr)
-	cl.send(map[string]any{"agent_hello": map[string]any{"name": "fake-mod", "protocol": 17}})
+	cl.send(map[string]any{"agent_hello": map[string]any{"name": "fake-mod", "protocol": PROTOCOL_VERSION}})
 	if m := cl.recv(t); !okTrue(m) {
 		t.Fatalf("agent_hello rejected: %v", m)
 	}
