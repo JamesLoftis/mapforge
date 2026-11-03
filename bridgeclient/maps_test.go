@@ -53,6 +53,27 @@ func TestStatusParsesMapFields(t *testing.T) {
 	}
 }
 
+func TestStatusParsesModified(t *testing.T) {
+	reply := `{"ok":true,"result":{"map_open":true,"modified":true}}`
+	got, err := newTestClient(t, startFakeBridge(t, reply)).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !got.Modified {
+		t.Errorf("Modified = false, want true")
+	}
+}
+
+func TestWaitMapOpReturnsOpError(t *testing.T) {
+	reply := `{"ok":true,"result":{"busy":false,"last_map_op":` +
+		`{"op":"save_map","path":"a.dungeondraft_map","done":true,"error":"nothing was written"}}}`
+	c := newTestClient(t, startFakeBridge(t, reply))
+	err := c.WaitMapOp(context.Background(), "save_map", "a.dungeondraft_map", 5*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "nothing was written") {
+		t.Fatalf("err = %v, want the op's own error", err)
+	}
+}
+
 func TestWaitMapOpReturnsWhenDone(t *testing.T) {
 	fb := startFakeBridgeSeq(t, []string{statusReply(false), statusReply(false), statusReply(true)})
 	c := newTestClient(t, fb)

@@ -493,6 +493,7 @@ func _get_status() -> Dictionary:
 func _add_map_lifecycle_status(status : Dictionary) -> void:
 	var map_file = Global.Editor.CurrentMapFile
 	status["busy"] = _is_dungeondraft_busy()
+	status["modified"] = bool(_master().get("IsModified"))
 	status["map_file"] = map_file if map_file != null else ""
 	status["last_map_op"] = Engine.get_meta(MAP_OP_META) if Engine.has_meta(MAP_OP_META) else {}
 
@@ -520,8 +521,25 @@ func _watch_saves() -> void:
 	Global.Editor.connect("OnSaveEnd", self, "_on_save_end")
 
 
+# Dungeondraft only logs a failed write and still ends the save, so the file
+# itself is checked before the map counts as saved to path.
 func _on_save_end() -> void:
-	_mark_map_op_done("save_map")
+	if not Engine.has_meta(MAP_OP_META):
+		return
+	var op : Dictionary = Engine.get_meta(MAP_OP_META)
+	if op.op != "save_map" or op.done:
+		return
+	if _was_written_since(op.path, op.started):
+		# As the GUI does after a save: the map's current file becomes path.
+		Global.Editor.OnOpenedOrSaved(op.path)
+		_mark_map_op_done("save_map")
+	else:
+		_mark_map_op_failed("save_map", "Dungeondraft did not write the map file (see its log)")
+
+
+func _was_written_since(path : String, unix_time : int) -> bool:
+	var file := File.new()
+	return file.file_exists(path) and file.get_modified_time(path) >= unix_time
 
 
 # Runs on every mod start. open_map/new_map restart Dungeondraft's scene and
@@ -540,15 +558,25 @@ func _finish_restarting_map_op() -> void:
 
 
 func _begin_map_op(op : String, path : String) -> void:
-	Engine.set_meta(MAP_OP_META, { "op": op, "path": path, "done": false })
+	Engine.set_meta(MAP_OP_META, { "op": op, "path": path, "done": false, "started": OS.get_unix_time() })
 
 
 func _mark_map_op_done(op : String) -> void:
+	_finish_map_op(op, {})
+
+
+func _mark_map_op_failed(op : String, error : String) -> void:
+	_finish_map_op(op, { "error": error })
+
+
+func _finish_map_op(op : String, outcome : Dictionary) -> void:
 	if not Engine.has_meta(MAP_OP_META):
 		return
 	var current : Dictionary = Engine.get_meta(MAP_OP_META)
 	if current.op == op and not current.done:
 		current.done = true
+		for key in outcome:
+			current[key] = outcome[key]
 		Engine.set_meta(MAP_OP_META, current)
 
 
@@ -592,14 +620,14 @@ func _save_map(req : Dictionary) -> Dictionary:
 	var path = req.get("path")
 	if not _is_map_file_path(path):
 		return _err("save_map needs path: an absolute path ending in %s (got %s)" % [MAP_EXTENSION, str(path)])
+	if not Directory.new().dir_exists(path.get_base_dir()):
+		return _err("save_map: no folder at " + path.get_base_dir())
 	if Global.World.GetCurrentLevel() == null:
 		return _err("no map open")
 	if _is_dungeondraft_busy():
 		return _err("busy: Dungeondraft is saving, backing up, exporting or computing")
 	_begin_map_op("save_map", path)
 	_master().call("Save", path, null)
-	# As the GUI does after a save: the map's current file becomes path.
-	Global.Editor.OnOpenedOrSaved(path)
 	return _ok({ "started": true })
 
 

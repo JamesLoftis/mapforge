@@ -46,6 +46,16 @@ func TestPreconditionRejectsUnsavedMapWithContent(t *testing.T) {
 	}
 }
 
+func TestPreconditionRejectsModifiedUnsavedMap(t *testing.T) {
+	err := checkPreconditions(bridgePing{DDConnected: true}, bridge.MapStatus{
+		MapOpen:  true,
+		Modified: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsaved changes") {
+		t.Fatalf("err = %v, want it to mention unsaved changes", err)
+	}
+}
+
 func TestPreconditionAllowsEmptyUnsavedMap(t *testing.T) {
 	err := checkPreconditions(bridgePing{DDConnected: true}, bridge.MapStatus{
 		MapOpen: true,

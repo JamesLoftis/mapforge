@@ -71,6 +71,9 @@ func checkPreconditions(ping bridgePing, status bridge.MapStatus) error {
 		return errors.New("Dungeondraft is not connected to bridge_app — is the TF Bridge Agent mod enabled?")
 	case !status.MapOpen:
 		return nil
+	case status.MapFile == "" && status.Modified:
+		return errors.New("an unsaved map with unsaved changes is open; save or discard it first — " +
+			"the harness replaces the open map")
 	case status.MapFile == "" && totalElements(status) > 0:
 		return fmt.Errorf("an unsaved map with content is open (%s); save or discard it first — "+
 			"the harness replaces the open map", describeCounts(status))

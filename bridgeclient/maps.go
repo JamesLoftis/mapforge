@@ -11,8 +11,10 @@ const mapOpPollInterval = 250 * time.Millisecond
 
 // MapStatus is the map-lifecycle part of get_status.
 type MapStatus struct {
-	MapOpen   bool
-	Busy      bool
+	MapOpen bool
+	Busy    bool
+	// Modified is Dungeondraft's own unsaved-changes flag (any undoable edit).
+	Modified  bool
 	MapFile   string
 	LastMapOp MapOp
 	// Counts is the open map's element count per kind ("walls", "paths", ...).
@@ -24,10 +26,19 @@ type MapOp struct {
 	Op   string
 	Path string
 	Done bool
+	// Error is set when the op finished without doing its job.
+	Error string
 }
 
 func (op MapOp) isDone(name, path string) bool {
 	return op.Done && op.Op == name && op.Path == path
+}
+
+func (op MapOp) failure() error {
+	if op.Error == "" {
+		return nil
+	}
+	return fmt.Errorf("%s \"%s\" failed: %s", op.Op, op.Path, op.Error)
 }
 
 // Status reads the map-lifecycle fields of get_status.
@@ -38,13 +49,15 @@ func (c *Client) Status(ctx context.Context) (MapStatus, error) {
 	}
 	op, _ := res["last_map_op"].(map[string]any)
 	return MapStatus{
-		MapOpen: res["map_open"] == true,
-		Busy:    res["busy"] == true,
-		MapFile: stringField(res, "map_file"),
+		MapOpen:  res["map_open"] == true,
+		Busy:     res["busy"] == true,
+		Modified: res["modified"] == true,
+		MapFile:  stringField(res, "map_file"),
 		LastMapOp: MapOp{
-			Op:   stringField(op, "op"),
-			Path: stringField(op, "path"),
-			Done: op["done"] == true,
+			Op:    stringField(op, "op"),
+			Path:  stringField(op, "path"),
+			Done:  op["done"] == true,
+			Error: stringField(op, "error"),
 		},
 		Counts: elementCounts(res),
 	}, nil
@@ -87,7 +100,7 @@ func (c *Client) SaveMap(ctx context.Context, path string) error {
 }
 
 // WaitMapOp polls Status until the last map op is op on path, done, and
-// Dungeondraft is not busy. open_map and new_map restart the mod, so a
+// Dungeondraft is not busy, then returns the op's own error if it failed. open_map and new_map restart the mod, so a
 // Status error during the wait counts as "not yet"; the last one is
 // reported if the wait times out.
 func (c *Client) WaitMapOp(ctx context.Context, op, path string, timeout time.Duration) error {
@@ -98,7 +111,7 @@ func (c *Client) WaitMapOp(ctx context.Context, op, path string, timeout time.Du
 	for {
 		st, err := c.Status(ctx)
 		if err == nil && st.LastMapOp.isDone(op, path) && !st.Busy {
-			return nil
+			return st.LastMapOp.failure()
 		}
 		lastErr = err
 		select {

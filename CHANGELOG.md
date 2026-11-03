@@ -18,7 +18,9 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 ### Added
 
 - Map lifecycle commands `new_map`, `open_map`, `save_map`, and `get_status`
-  fields `busy`, `map_file`, `last_map_op` (protocol v18).
+  fields `busy`, `modified`, `map_file`, `last_map_op` (protocol v18).
+  `save_map` checks the file was written and reports `last_map_op.error`
+  when it was not; Dungeondraft itself only logs a failed write.
 
 ### Fixed
 
