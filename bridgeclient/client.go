@@ -188,8 +188,7 @@ func jsonNumberAsInt64(v any) int64 {
 // way createNode/idAsString (ddprovider package) render one for a
 // resource's Terraform id, so a level_id attribute value compares equal to
 // what list_levels reports regardless of which JSON type the bridge sent
-// it as. Kept in sync with idAsString by hand (see this package's doc
-// comment: it's a deliberate vendored copy, not a shared import).
+// it as. Kept in sync with idAsString by hand.
 func formatJSONNumber(v any) string {
 	if s, ok := v.(string); ok {
 		return s

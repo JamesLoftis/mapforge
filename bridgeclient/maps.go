@@ -15,6 +15,8 @@ type MapStatus struct {
 	Busy      bool
 	MapFile   string
 	LastMapOp MapOp
+	// Counts is the open map's element count per kind ("walls", "paths", ...).
+	Counts map[string]int
 }
 
 // MapOp is the most recent new_map/open_map/save_map the mod started.
@@ -44,7 +46,17 @@ func (c *Client) Status(ctx context.Context) (MapStatus, error) {
 			Path: stringField(op, "path"),
 			Done: op["done"] == true,
 		},
+		Counts: elementCounts(res),
 	}, nil
+}
+
+func elementCounts(status map[string]any) map[string]int {
+	raw, _ := status["counts"].(map[string]any)
+	counts := make(map[string]int, len(raw))
+	for kind, n := range raw {
+		counts[kind] = int(jsonNumberAsInt64(n))
+	}
+	return counts
 }
 
 func stringField(m map[string]any, key string) string {

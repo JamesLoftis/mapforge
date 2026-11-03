@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ func statusReply(done bool) string {
 		"map_open": true,
 		"busy":     false,
 		"map_file": scratchPath,
+		"counts":   map[string]any{"paths": 1, "lights": 2},
 		"last_map_op": map[string]any{
 			"op": "save_map", "path": scratchPath, "done": done,
 		},
@@ -44,8 +46,9 @@ func TestStatusParsesMapFields(t *testing.T) {
 		Busy:      false,
 		MapFile:   scratchPath,
 		LastMapOp: MapOp{Op: "save_map", Path: scratchPath, Done: true},
+		Counts:    map[string]int{"paths": 1, "lights": 2},
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Status = %+v, want %+v", got, want)
 	}
 }
