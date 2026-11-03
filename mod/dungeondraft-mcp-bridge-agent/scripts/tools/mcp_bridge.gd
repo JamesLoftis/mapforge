@@ -912,12 +912,21 @@ func _list_levels() -> Dictionary:
 # Create
 # ---------------------------------------------------------------------------
 
+# DD's Objects.Save() reads this meta inside a try/catch and silently skips
+# the object when it is missing (logging "Objects modified during a save.
+# Skipping."); CreateObject() never sets it, only ObjectTool does on
+# placement. Same hazard as paths and lights (see _draw_path).
+func _mark_placed(prop) -> void:
+	prop.set_meta("preview", false)
+
+
 func _place_object(req : Dictionary) -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null: return _err("no map open")
 	var tex = _asset_tex("Objects", req.get("asset", ""))
 	if tex == null: return _err("could not load object asset: " + str(req.get("asset")))
 	var prop = level.Objects.CreateObject(_i(req.get("sorting", 0), 0))
+	_mark_placed(prop)
 	prop.SetTexture(tex)
 	prop.position = _xy(req, Global.World.WoxelDimensions * 0.5)
 	var s = _num(req.get("scale", 1.0), 1.0)
@@ -1771,6 +1780,7 @@ func _duplicate_object(req : Dictionary) -> Dictionary:
 	if src == null: return _err("no element with id " + str(req.get("id")))
 	if src.get("Texture") == null: return _err("element has no Texture to duplicate")
 	var prop = level.Objects.CreateObject(0)
+	_mark_placed(prop)
 	prop.SetTexture(src.Texture)
 	prop.position = src.position + Vector2(_num(req.get("dx", 64.0), 64.0), _num(req.get("dy", 0.0), 0.0))
 	prop.scale = src.scale

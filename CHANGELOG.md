@@ -15,6 +15,17 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ## [Unreleased]
 
+### Added
+
+- Map lifecycle commands `new_map`, `open_map`, `save_map`, and `get_status`
+  fields `busy`, `map_file`, `last_map_op` (protocol v18).
+
+### Fixed
+
+- Objects placed or duplicated through the bridge were silently left out of
+  every save: Dungeondraft's `Objects.Save()` skips a prop without the
+  `preview` meta, which only its own Object tool sets. The mod now sets it.
+
 ## [0.2.0] - 2026-09-02
 
 ### Fixed

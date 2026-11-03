@@ -57,8 +57,9 @@ func createOneOfEachKind(c context.Context, t *testing.T) []createdElement {
 		return res
 	}
 
-	create("object", "place_object", map[string]any{"asset": firstAsset(c, t, "Objects"),
+	object := create("object", "place_object", map[string]any{"asset": firstAsset(c, t, "Objects"),
 		"x": 1000, "y": 1000, "scale": 1, "rotation": 0, "sorting": 0})
+	create("object_duplicate", "duplicate_object", map[string]any{"id": object["id"], "dx": 200, "dy": 0})
 	wall := create("wall", "draw_wall", map[string]any{"asset": firstAsset(c, t, "Walls"),
 		"points": [][]float64{{600, 600}, {1600, 600}}, "loop": false, "shadow": true, "type": 0, "joint": 1})
 	create("wall_portal", "add_portal", map[string]any{"asset": firstAsset(c, t, "Portals"),
