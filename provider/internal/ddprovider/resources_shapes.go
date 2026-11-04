@@ -412,14 +412,14 @@ func (r *patternResource) Read(ctx context.Context, req resource.ReadRequest, re
 	// So we full-sync geometry only for points-declared patterns; a rect can't
 	// be reconstructed from an arbitrary polygon, and writing points into a
 	// rect-based resource would churn forever (rect -> points each plan). A
-	// rect-declared pattern is therefore write-mostly (existence check only).
+	// rect-declared pattern syncs only its level.
 	if !m.Points.IsNull() && !m.Points.IsUnknown() {
 		if pts, ok := desc["points"].([]any); ok {
 			m.Points = pointListToAttr(ctx, pts)
 		}
-		m.Level = levelFromDescriptor(desc, m.Level)
-		resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 	}
+	m.Level = levelFromDescriptor(desc, m.Level)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 
 func (r *patternResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
