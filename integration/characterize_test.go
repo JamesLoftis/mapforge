@@ -54,17 +54,25 @@ type terraform struct {
 
 func newTerraform(t *testing.T) terraform {
 	t.Helper()
+	fixture, err := os.ReadFile(characterizeFixture)
+	if err != nil {
+		t.Fatalf("reading fixture: %v", err)
+	}
+	return newTerraformWith(t, map[string]string{"main.tf": string(fixture)})
+}
+
+// newTerraformWith runs terraform in a temp dir holding files (name -> content).
+func newTerraformWith(t *testing.T, files map[string]string) terraform {
+	t.Helper()
 	binary, err := exec.LookPath("terraform")
 	if err != nil {
 		t.Skip("terraform CLI not on PATH; install Terraform >= 1.5 to run the characterization test")
 	}
 	dir := t.TempDir()
-	fixture, err := os.ReadFile(characterizeFixture)
-	if err != nil {
-		t.Fatalf("reading fixture: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "main.tf"), fixture, 0o644); err != nil {
-		t.Fatalf("copying fixture: %v", err)
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("writing %s: %v", name, err)
+		}
 	}
 	mirror, built := buildProvider(t)
 	return terraform{binary: binary, dir: dir, builtProvider: built, cliConfig: writeCLIConfig(t, mirror)}

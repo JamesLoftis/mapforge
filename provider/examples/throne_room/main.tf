@@ -21,7 +21,7 @@ data "dungeondraft_map" "map" {}
 locals {
   throne_point = [20480, 19968] # a woxel the damaged segment ran through
   throne_wall = [for e in data.dungeondraft_map.map.elements :
-    e if e.kind == "wall" && contains(e.position, local.throne_point)][0]
+  e if e.kind == "wall" && contains(e.position, local.throne_point)][0]
 }
 
 data "dungeondraft_assets" "portals" {

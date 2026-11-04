@@ -1,4 +1,4 @@
-# Exercises dungeondraft_level and every creator resource's level_id
+# Exercises dungeondraft_level and every creator resource's level
 # attribute. CAUTION if you actually run this against a real map: there is
 # no delete_level command in the bridge protocol at all (see
 # resources_level.go's package doc comment) — `terraform destroy` cannot
@@ -31,8 +31,7 @@ resource "dungeondraft_level" "upper" {
   label = "Upper Floor"
 }
 
-# Lands on whichever level is currently active (unchanged, pre-existing
-# behavior) — no level_id set.
+# No level set: lands on the provider block's level ("Ground").
 resource "dungeondraft_object" "ground_crate" {
   asset = local.crate
   x     = local.cx
@@ -42,8 +41,8 @@ resource "dungeondraft_object" "ground_crate" {
 # Lands on dungeondraft_level.upper specifically, regardless of what's
 # currently active or what any other resource in this plan targets.
 resource "dungeondraft_object" "upper_crate" {
-  asset    = local.crate
-  x        = local.cx
-  y        = local.cy
-  level_id = dungeondraft_level.upper.id
+  asset = local.crate
+  x     = local.cx
+  y     = local.cy
+  level = dungeondraft_level.upper.id # the level's id is its label
 }

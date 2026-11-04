@@ -209,6 +209,7 @@ func (r *wallResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	if v := numAsInt64(desc["joint"]); desc["joint"] != nil {
 		m.Joint = types.Int64Value(v)
 	}
+	m.Level = levelFromDescriptor(desc, m.Level)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 
@@ -374,6 +375,7 @@ func (r *portalResource) Read(ctx context.Context, req resource.ReadRequest, res
 		m.X = types.Float64Value(numAsFloat(pos[0]))
 		m.Y = types.Float64Value(numAsFloat(pos[1]))
 	}
+	m.Level = levelFromDescriptor(desc, m.Level)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 
@@ -519,6 +521,7 @@ func (r *objectResource) Read(ctx context.Context, req resource.ReadRequest, res
 	if desc["scale"] != nil {
 		m.Scale = types.Float64Value(numAsFloat(desc["scale"]))
 	}
+	m.Level = levelFromDescriptor(desc, m.Level)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 
@@ -730,6 +733,7 @@ func (r *lightResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	if a, ok := desc["asset"].(string); ok && a != "" {
 		m.Asset = types.StringValue(a)
 	}
+	m.Level = levelFromDescriptor(desc, m.Level)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 

@@ -184,47 +184,55 @@ description for the full four-way selection. `clear_caves` (wipe the whole
 Caves layer) has no resource: like `undo`/`redo`/camera/selection, it has
 no created identity to track or diff against.
 
+## Map binding
+
+The provider block's `map_file` (required) names the saved
+`.dungeondraft_map` this state belongs to. Every command carries it, and
+Dungeondraft refuses them (`wrong_map`) while any other map, or an unsaved
+one, is open: state can never be read or changed against the wrong map. Save
+the map to that path before the first apply.
+
 ## Levels
 
+A level is identified by its **label**, which Dungeondraft saves; its numeric
+id is renumbered by position whenever the map is reopened. Labels must be
+unique within a map (`add_level` refuses a label already in use).
+
 Every creator resource (everything in the table above except
-`dungeondraft_level` itself) accepts an optional `level_id` attribute:
+`dungeondraft_level` itself) has a `level` attribute naming the level by
+label. It defaults to the provider block's `level`; a resource with neither
+fails at plan time. Changing it replaces the element (no command moves an
+element between levels).
 
 ```hcl
+provider "dungeondraft" {
+  map_file = "C:/maps/keep.dungeondraft_map"
+  level    = "Ground"
+}
+
 resource "dungeondraft_level" "upper" {
   label = "Upper Floor"
 }
 
 resource "dungeondraft_object" "torch" {
-  asset    = "res://.../torch.png"
-  x        = 1024
-  y        = 1024
-  level_id = dungeondraft_level.upper.id  # otherwise lands on whatever level is currently active
+  asset = "res://.../torch.png"
+  x     = 1024
+  y     = 1024
+  level = dungeondraft_level.upper.id # the level's id is its label
 }
 ```
 
-Two things make this more than "just another param":
+Each command that targets a level carries its label; the mod finds that one
+level, runs the command on it, and restores the level that was active, so
+no command can land on another's level and nothing is locked client-side.
+An unknown label (`level_not_found`) or one shared by two levels
+(`level_ambiguous`) is an error naming it.
 
-- The bridge only has `set_level` (switch which level is *currently active*)
-  — every creator command implicitly targets whatever that is, and there's
-  no way to pass a level directly to `place_object` etc. So `level_id`
-  works by having the provider call `set_level` immediately before the
-  create, under an `RWMutex` that serializes the whole
-  resolve-index → switch → create sequence against every *other* create,
-  targeted or not (`bridge.Client.RunOnLevel`) — otherwise a concurrent
-  create (Terraform's default `-parallelism` is 10) could land between this
-  one's `set_level` and its own create and end up on the wrong level, even
-  if that other create never sets `level_id` itself. A `level_id`-targeted
-  create takes the exclusive write lock (it's the one actually mutating
-  "current level," so it has to exclude everything); an untargeted create
-  takes the shared read lock, so untargeted creates still run fully
-  concurrently with each other — only a level-targeted create in the mix
-  costs anything.
-- **`dungeondraft_level` has no delete or rename counterpart in the bridge
-  protocol at all** — `add_level`/`set_level`/`list_levels` is the entire
-  level write surface. `Delete` only warns; a `label` change replaces
-  (destroys, in Terraform's model) but the old level is never actually
-  removed from the map, just orphaned. Treat this resource as effectively
-  append-only.
+**`dungeondraft_level` has no delete or rename counterpart in the bridge
+protocol** — `add_level` is the entire level write surface. `Delete` only
+warns; a `label` change replaces (destroys, in Terraform's model) but the
+old level is never actually removed from the map, just orphaned. Treat this
+resource as effectively append-only.
 
 See `examples/level/` for a worked plan (**do not run it against a real
 map** — for the reason above, it's a one-way door).

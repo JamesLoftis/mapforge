@@ -988,7 +988,18 @@ func _get_element(req : Dictionary) -> Dictionary:
 	var node = _resolve(req)
 	if node == null:
 		return _not_found(req)
-	return _ok(_describe(node))
+	var described = _describe(node)
+	described["level"] = _level_label_of(node)
+	return _ok(described)
+
+
+# The label of the level an element lives on ("" if none holds it): how
+# Terraform identifies levels, so a Read (or an import) can report it.
+func _level_label_of(node) -> String:
+	for level in Global.World.levels:
+		if level.is_a_parent_of(node):
+			return level.Label
+	return ""
 
 
 func _list_levels() -> Dictionary:

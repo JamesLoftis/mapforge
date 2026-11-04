@@ -85,6 +85,16 @@ func (b *nodeResourceBase) planLevel(ctx context.Context, req resource.ModifyPla
 	return level, true
 }
 
+// levelFromDescriptor is the level label get_element reports for an
+// element, or current when it reports none. It is what lets an imported
+// element (state level null) keep its real level instead of being replaced.
+func levelFromDescriptor(desc map[string]any, current types.String) types.String {
+	if label, _ := desc["level"].(string); label != "" {
+		return types.StringValue(label)
+	}
+	return current
+}
+
 // effectiveLevel is the resource's own level, else the provider block's.
 // Neither is an error: an element never lands on "whatever level is active".
 func effectiveLevel(configured types.String, providerLevel string) (types.String, diag.Diagnostics) {

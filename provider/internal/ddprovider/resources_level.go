@@ -6,6 +6,7 @@ import (
 	bridge "dungeondraft-mcp/bridgeclient"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -105,6 +106,21 @@ func (r *levelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	m.Label = m.ID
 	m.Index = types.Int64Value(index)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+}
+
+// ModifyPlan plans id as the label. Without it a relabel leaves id unknown
+// at plan time, so an element whose level references this id plans an
+// in-place update and then fails apply with an inconsistent final plan.
+func (r *levelResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	var label types.String
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("label"), &label)...)
+	if resp.Diagnostics.HasError() || label.IsUnknown() {
+		return
+	}
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("id"), label)...)
 }
 
 func (r *levelResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {

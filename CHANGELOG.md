@@ -39,6 +39,15 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ### Fixed
 
+- `get_element` reports the element's `level` label and every element Read
+  stores it, so an imported element keeps its level instead of being
+  replaced, and a level change made in Dungeondraft shows as drift.
+- `dungeondraft_level` plans its `id` as its label, so an element whose
+  `level` references `.id` is replaced on a relabel instead of failing
+  apply with "inconsistent final plan".
+- The provider README and every example follow the new schema
+  (`map_file`, `level`) and are validated by the integration suite.
+
 - After a save and reopen, Terraform replaced every level and every element
   on a non-first level: Dungeondraft renumbers level ids on load. A
   `set_level` from one resource could also leak into another's create.

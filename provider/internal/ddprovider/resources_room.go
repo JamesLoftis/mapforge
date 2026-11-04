@@ -191,7 +191,7 @@ func (r *roomResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	// dungeondraft_terrain_fill) the floor step has no general getter to
 	// drift-check against once painted. If the wall is gone, treat the whole
 	// room as gone.
-	_, exists, diags := fetchNode(ctx, r.client, m.ID.ValueString())
+	desc, exists, diags := fetchNode(ctx, r.client, m.ID.ValueString())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -200,6 +200,7 @@ func (r *roomResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		resp.State.RemoveResource(ctx)
 		return
 	}
+	m.Level = levelFromDescriptor(desc, m.Level)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 

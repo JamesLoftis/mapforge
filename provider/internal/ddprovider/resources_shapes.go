@@ -125,6 +125,7 @@ func (r *roofResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	if v := numAsInt64(desc["type"]); desc["type"] != nil {
 		m.Type = types.Int64Value(v)
 	}
+	m.Level = levelFromDescriptor(desc, m.Level)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 
@@ -248,6 +249,7 @@ func (r *textResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	if s, ok := desc["font"].(string); ok && s != "" {
 		m.Font = types.StringValue(s)
 	}
+	m.Level = levelFromDescriptor(desc, m.Level)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 
@@ -415,6 +417,7 @@ func (r *patternResource) Read(ctx context.Context, req resource.ReadRequest, re
 		if pts, ok := desc["points"].([]any); ok {
 			m.Points = pointListToAttr(ctx, pts)
 		}
+		m.Level = levelFromDescriptor(desc, m.Level)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 	}
 }
@@ -542,6 +545,7 @@ func (r *pathResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	if desc["smoothness"] != nil {
 		m.Smoothness = types.Float64Value(numAsFloat(desc["smoothness"]))
 	}
+	m.Level = levelFromDescriptor(desc, m.Level)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 
