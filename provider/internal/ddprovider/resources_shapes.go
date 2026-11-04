@@ -120,7 +120,7 @@ func (r *roofResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		m.Points = pointListToAttr(ctx, pts)
 	}
 	if desc["width"] != nil {
-		m.Width = types.Float64Value(numAsFloat(desc["width"]))
+		m.Width = reportedFloat(numAsFloat(desc["width"]), m.Width)
 	}
 	if v := numAsInt64(desc["type"]); desc["type"] != nil {
 		m.Type = types.Int64Value(v)
@@ -234,8 +234,8 @@ func (r *textResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	// Text exposes position/text/size/color/font; sync them so hand edits
 	// (moved label, retyped string, resized font) surface as drift.
 	if pos, ok := desc["position"].([]any); ok && len(pos) == 2 {
-		m.X = types.Float64Value(numAsFloat(pos[0]))
-		m.Y = types.Float64Value(numAsFloat(pos[1]))
+		m.X = reportedFloat(numAsFloat(pos[0]), m.X)
+		m.Y = reportedFloat(numAsFloat(pos[1]), m.Y)
 	}
 	if s, ok := desc["text"].(string); ok && s != "" {
 		m.Text = types.StringValue(s)
@@ -543,7 +543,7 @@ func (r *pathResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		m.Points = pointListToAttr(ctx, pts)
 	}
 	if desc["smoothness"] != nil {
-		m.Smoothness = types.Float64Value(numAsFloat(desc["smoothness"]))
+		m.Smoothness = reportedFloat(numAsFloat(desc["smoothness"]), m.Smoothness)
 	}
 	m.Level = levelFromDescriptor(desc, m.Level)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)

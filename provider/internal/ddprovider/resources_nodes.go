@@ -366,14 +366,14 @@ func (r *portalResource) Read(ctx context.Context, req resource.ReadRequest, res
 		m.Closed = types.BoolValue(v)
 	}
 	if v := numAsFloat(desc["radius"]); desc["radius"] != nil {
-		m.Radius = types.Float64Value(v)
+		m.Radius = reportedFloat(v, m.Radius)
 	}
 	if a, ok := desc["asset"].(string); ok && a != "" {
 		m.Asset = types.StringValue(a)
 	}
 	if pos, ok := desc["position"].([]any); ok && len(pos) == 2 {
-		m.X = types.Float64Value(numAsFloat(pos[0]))
-		m.Y = types.Float64Value(numAsFloat(pos[1]))
+		m.X = reportedFloat(numAsFloat(pos[0]), m.X)
+		m.Y = reportedFloat(numAsFloat(pos[1]), m.Y)
 	}
 	m.Level = levelFromDescriptor(desc, m.Level)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
@@ -512,14 +512,14 @@ func (r *objectResource) Read(ctx context.Context, req resource.ReadRequest, res
 	// positional fields and surfaces hand-edits (moves/scales/rotations) as
 	// drift. z/sorting/color are not in the descriptor; they stay as config.
 	if pos, ok := desc["position"].([]any); ok && len(pos) == 2 {
-		m.X = types.Float64Value(numAsFloat(pos[0]))
-		m.Y = types.Float64Value(numAsFloat(pos[1]))
+		m.X = reportedFloat(numAsFloat(pos[0]), m.X)
+		m.Y = reportedFloat(numAsFloat(pos[1]), m.Y)
 	}
 	if desc["rotation"] != nil {
-		m.Rotation = types.Float64Value(numAsFloat(desc["rotation"]))
+		m.Rotation = reportedFloat(numAsFloat(desc["rotation"]), m.Rotation)
 	}
 	if desc["scale"] != nil {
-		m.Scale = types.Float64Value(numAsFloat(desc["scale"]))
+		m.Scale = reportedFloat(numAsFloat(desc["scale"]), m.Scale)
 	}
 	m.Level = levelFromDescriptor(desc, m.Level)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
@@ -727,8 +727,8 @@ func (r *lightResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	// Lights expose position/rotation/scale/asset; sync position + asset for
 	// drift detection. energy/range/shadows/color are not in the descriptor.
 	if pos, ok := desc["position"].([]any); ok && len(pos) == 2 {
-		m.X = types.Float64Value(numAsFloat(pos[0]))
-		m.Y = types.Float64Value(numAsFloat(pos[1]))
+		m.X = reportedFloat(numAsFloat(pos[0]), m.X)
+		m.Y = reportedFloat(numAsFloat(pos[1]), m.Y)
 	}
 	if a, ok := desc["asset"].(string); ok && a != "" {
 		m.Asset = types.StringValue(a)
