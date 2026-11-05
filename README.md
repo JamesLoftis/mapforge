@@ -45,36 +45,29 @@ serves an admin page:
 - `http://127.0.0.1:8788/connections` — who is connected right now
 
 > **Status: working.** Confirmed end-to-end against Dungeondraft on **Godot
-> 3.4.2** — raw TCP/JSON agent bridging works, no fallback needed. 40 tools
-> across query / create / modify / terrain / levels / selection / capture /
-> camera (see below).
+> 3.4.2** — raw TCP/JSON agent bridging works, no fallback needed. The MCP
+> server is look-only: 15 tools across query / capture / view (see below).
+> Maps are built with the Terraform provider in `provider/`.
 
 ## What the AI can do
+
+The MCP server only looks at the map; it cannot create, change, delete,
+paint, select or undo anything. Build and change maps with Terraform
+(`provider/README.md`), so every change goes through a plan and lands in
+state.
 
 - **Inspect:** `get_status`, `list_levels`, `list_elements`, `get_element`,
   `dump_state` (whole-level snapshot in one call),
   `list_asset_categories`, `list_assets` (with substring search).
-- **Create:** `place_object`, `draw_wall`, `draw_path`, `add_light`,
-  `add_portal`, `add_roof`, `add_text`, `place_pattern` (tiled floor shapes —
-  wood planks, tile, brick — rendered below objects), `build_room` (a wall loop
-  + matching floor on one shared path, like the UI's combined trace).
-- **Terrain:** `set_terrain_slot`, `fill_terrain` (whole level), `fill_region`
-  (a rect/polygon, e.g. one room's floor), `paint_terrain` (a soft brush),
-  `paint_path` (a smooth continuous stroke along a polyline — roads/trails).
-- **Caves:** `dig_cave` carves caverns/tunnels along a path (the Cave Brush —
-  dig open floor out of rock, with auto rocky walls + debris; `dig=false` fills
-  back; optional ground/wall tints), `clear_caves` wipes the whole cave layer.
-- **Edit:** `move_element`, `modify_object`, `duplicate_object`,
-  `delete_element`, `select_elements`, `clear_selection`.
-- **Levels:** `add_level`, `set_level`.
 - **See:** `screenshot` (current window) and `export_map` (clean full-map
   render) return images, so the model can look at its own work and iterate.
-- **Camera:** `get_camera`, `set_camera`, `focus_element` (center on one
+- **View:** `set_level` (which level the editor shows), `get_camera`,
+  `set_camera`, `focus_element` (center on one
   element), `fit_elements` (frame a group) — point the view before a
   `screenshot` to inspect specific spots like a door cut into a wall.
 
-Every element is referenced by an integer `id`; create and list calls return
-ids you feed back into edit calls. Coordinates are woxel (pixel) space — call
+Every element is referenced by an integer `id`; list calls return ids you
+pass to `get_element` and `focus_element`. Coordinates are woxel (pixel) space — call
 `get_status` for `map_center`. Discover assets with `list_assets`.
 
 ## Setup

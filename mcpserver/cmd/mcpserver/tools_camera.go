@@ -45,3 +45,13 @@ func (a *app) FitElements(ctx context.Context, _ *mcp.CallToolRequest, in FitEle
 	addNonZero(params, "pad", in.Pad)
 	return a.forward(ctx, "fit_elements", params)
 }
+
+type SetLevelInput struct {
+	Index int `json:"index"`
+}
+
+// SetLevel switches which level the editor shows; like the camera, it
+// changes the view, not the map.
+func (a *app) SetLevel(ctx context.Context, _ *mcp.CallToolRequest, in SetLevelInput) (*mcp.CallToolResult, any, error) {
+	return a.forward(ctx, "set_level", map[string]any{"index": in.Index})
+}

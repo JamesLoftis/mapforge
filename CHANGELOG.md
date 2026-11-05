@@ -30,6 +30,11 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ### Removed
 
+- Every MCP tool that creates, changes, deletes, paints terrain, digs caves,
+  selects or undoes (spec goal 2). The MCP server keeps 15 look-only tools:
+  status, listing, element details, levels, assets, screenshot and export,
+  camera, and `set_level`. Maps are built with Terraform.
+
 - The mod's undo/redo history and the `undo` / `redo` commands (spec
   finding 7). Its stacks held every created node and terrain or cave
   snapshot for the whole session; the command log replaces what history was
