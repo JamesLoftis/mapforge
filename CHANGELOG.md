@@ -40,6 +40,9 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 - Edits made through the bridge now mark the map modified, so Dungeondraft
   warns before closing and backs it up; `get_status.modified` reflects them.
   Setting the static `Master.IsModified` from GDScript never took effect.
+- `dd-launch` now starts Dungeondraft and `bridge_app` fully detached. Before,
+  `bridge_app` shared `dd-launch`'s console window, and closing that window
+  shut it down.
 
 ### Removed
 

@@ -68,8 +68,7 @@ func main() {
 // dd-launch's own copy of the handle closes). extraArgs are passed through
 // as-is (used to hand bridge_app its own -log path instead).
 func startDetachedLogged(path string, extraArgs []string, ddLog string) error {
-	cmd := exec.Command(path, extraArgs...)
-	cmd.Dir = filepath.Dir(path)
+	cmd := launchCommand(path, extraArgs)
 	if ddLog != "" {
 		f, err := os.OpenFile(ddLog, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 		if err != nil {
@@ -79,6 +78,15 @@ func startDetachedLogged(path string, extraArgs []string, ddLog string) error {
 		cmd.Stderr = f
 	}
 	return cmd.Start()
+}
+
+// launchCommand builds the command for a child that must outlive dd-launch
+// and the window it ran in.
+func launchCommand(path string, args []string) *exec.Cmd {
+	cmd := exec.Command(path, args...)
+	cmd.Dir = filepath.Dir(path)
+	detachFromConsole(cmd)
+	return cmd
 }
 
 func selfDirectory() (string, error) {
