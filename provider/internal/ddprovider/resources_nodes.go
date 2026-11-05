@@ -516,7 +516,7 @@ func (r *objectResource) Read(ctx context.Context, req resource.ReadRequest, res
 		m.Y = reportedFloat(numAsFloat(pos[1]), m.Y)
 	}
 	if desc["rotation"] != nil {
-		m.Rotation = reportedFloat(numAsFloat(desc["rotation"]), m.Rotation)
+		m.Rotation = reportedAngle(numAsFloat(desc["rotation"]), m.Rotation)
 	}
 	if desc["scale"] != nil {
 		m.Scale = reportedFloat(numAsFloat(desc["scale"]), m.Scale)

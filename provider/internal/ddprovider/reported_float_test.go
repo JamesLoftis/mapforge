@@ -16,14 +16,35 @@ import (
 func TestReportedFloatKeepsValueDungeondraftApproximates(t *testing.T) {
 	cases := []struct{ reported, configured float64 }{
 		{20181.248047, 20181.248},
-		{90.000003, 90},
-		{326.000011, 326},
-		{85.999998, 86},
+		// A saved map keeps 6 significant digits ("Vector2( 20181.2, 15841.5 )").
+		{20181.199219, 20181.248},
+		{15841.5, 15841.536},
 	}
 	for _, c := range cases {
 		if got := reportedFloat(c.reported, types.Float64Value(c.configured)); got.ValueFloat64() != c.configured {
 			t.Errorf("reportedFloat(%v, %v) = %v; want the configured value kept", c.reported, c.configured, got)
 		}
+	}
+}
+
+// A saved map keeps rotations as radians to 6 decimal places (1.570796).
+func TestReportedAngleKeepsValueDungeondraftApproximates(t *testing.T) {
+	cases := []struct{ reported, configured float64 }{
+		{90.000003, 90},
+		{326.000011, 326},
+		{12.000028, 12},
+		{0.999983, 1},
+	}
+	for _, c := range cases {
+		if got := reportedAngle(c.reported, types.Float64Value(c.configured)); got.ValueFloat64() != c.configured {
+			t.Errorf("reportedAngle(%v, %v) = %v; want the configured value kept", c.reported, c.configured, got)
+		}
+	}
+}
+
+func TestReportedAngleTakesARealChange(t *testing.T) {
+	if got := reportedAngle(12.01, types.Float64Value(12)); got.ValueFloat64() != 12.01 {
+		t.Fatalf("a 0.01 degree turn came back as %v; want 12.01", got)
 	}
 }
 
