@@ -281,10 +281,8 @@ piece of state Terraform should own and diff, not a fire-and-forget action.
   shape-defining fields (`points`, `rect`, `asset`) since the bridge has no
   "reshape" API for any of them yet; only `move_element`/`modify_object`-style
   fields (position, scale, rotation, color) are true in-place updates today.
-- **Delete** → `delete_element`. Note it's **not undo-able** on the bridge
-  side (per `PROTOCOL.md`) — a `terraform destroy` is genuinely permanent,
-  which is normal for Terraform but worth calling out since this bridge's
-  own `undo`/`redo` won't help recover from it.
+- **Delete** → `delete_element`. A `terraform destroy` is permanent; the
+  bridge keeps no undo history (removed in plan 3).
 
 ### Suggested build order
 
