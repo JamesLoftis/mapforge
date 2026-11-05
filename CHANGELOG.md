@@ -28,6 +28,13 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
   `save_map` checks the file was written and reports `last_map_op.error`
   when it was not; Dungeondraft itself only logs a failed write.
 
+### Removed
+
+- The mod's undo/redo history and the `undo` / `redo` commands (spec
+  finding 7). Its stacks held every created node and terrain or cave
+  snapshot for the whole session; the command log replaces what history was
+  wanted for. Protocol v20: restart Dungeondraft so it loads the new mod.
+
 ### Changed
 
 - Levels are identified by label. Any command may carry `level` (a label);

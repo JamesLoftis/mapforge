@@ -25,10 +25,10 @@ first frame:
   Only one agent may be connected; a new `agent_hello` supersedes the old socket.
 
   ```json
-  { "agent_hello": { "name": "mcp_bridge_mod", "protocol": 19 } }
+  { "agent_hello": { "name": "mcp_bridge_mod", "protocol": 20 } }
   ```
 
-  → `{ "ok": true, "result": { "agent": "registered", "protocol": 19 } }`
+  → `{ "ok": true, "result": { "agent": "registered", "protocol": 20 } }`
 
   The agent **never replies to** `ping` — a `{"cmd":"ping"}` sent from the agent
   side is a heartbeat, answered by the app and consumed by the agent.
@@ -206,7 +206,6 @@ width, type }`, `place_pattern` → `{ id, points, ... }`.
 `fill_region` rasterizes a woxel-space rectangle or polygon into a texture-space
 alpha brush and stamps it once via `Terrain.Paint`, so it fills only inside the
 shape (e.g. one room's floor) rather than the whole level like `fill_terrain`.
-It is undo-recorded like the other terrain ops.
 
 | cmd | params |
 | --- | --- |
@@ -255,7 +254,7 @@ accepted the command. Completion shows in `get_status`:
 - `busy` — Dungeondraft's own `Master.IsBusy`: saving, backing up, exporting,
   closing, or computing caves/water.
 - `modified` — Dungeondraft's own unsaved-changes flag (`Master.IsModified`),
-  set by any undoable edit and cleared by a save or open.
+  set by edits made in Dungeondraft's own UI and cleared by a save or open.
 - `map_file` — the open map's file path, `""` when it has never been saved.
 - `last_map_op` — `{ op, path, done, started }` for the most recent of these
   commands (`path` is `""` for `new_map`; `started` is Unix seconds), or `{}`
@@ -299,24 +298,6 @@ frame what you want to inspect.
 zero-size rect at the node position as a fallback. `focus_element` centers on
 the rect's midpoint; `fit_elements` frames the union of all rects.
 
-### History
-
-The bridge keeps its **own** undo/redo stacks (it does not use Dungeondraft's
-`History.CreateCustomRecord`, which is unreliable on 3.4.2 — see notes). Every
-reversible edit (creates, `move_element`, `modify_object`, `fill_terrain`,
-`fill_region`, `paint_terrain`, `paint_path`, `dig_cave`) pushes an op; a fresh
-edit clears the redo stack. Terrain ops snapshot the splat image before/after;
-`dig_cave` snapshots the cave `BitMap` the same way.
-
-| cmd | params | result |
-| --- | --- | --- |
-| `undo` | — | `{ undone, kind?, undo_depth? }` / `{ undone: false, reason }` |
-| `redo` | — | `{ redone, kind?, redo_depth? }` / `{ redone: false, reason }` |
-
-`delete_element` is **not** reversible (it frees the node). Levels, selection
-and capture commands are not recorded. This stack is independent of the user's
-Ctrl+Z in Dungeondraft.
-
 `color` accepts `"#rrggbb"` / `"rrggbb"` or `[r,g,b]` / `[r,g,b,a]` floats 0..1.
 `type` for walls: 0=auto,1=manual,2=cave; for roofs: 0=gable,1=hip,2=dormer.
 
@@ -337,12 +318,6 @@ Ctrl+Z in Dungeondraft.
 - **`export_map`** — `Exporter.Start(0, ppi, path)` writes asynchronously. If DD
   chunks a very large map into multiple files, the single-path read would need
   extending.
-- **`undo` / `redo`** — bridge-managed stacks, not DD's history. DD 3.4.2's
-  `History.CreateCustomRecord` does not record programmatic creates, invokes
-  custom `undo()` inconsistently, and never round-trips `redo()`, so the bridge
-  uses its own. Create ops detach/re-attach the node (remove_child / add_child,
-  keeping a reference and a stable id); transform ops restore a property
-  snapshot; terrain ops restore a cloned splat image.
 - **`paint_terrain` / `fill_region` / `paint_path`** — all edit the splat weight
   image directly (`CloneSplatImage` → raise the target slot's channel per pixel →
   `RestoreSplat`) rather than `Terrain.Paint(...)`, which does not modify the
@@ -351,7 +326,7 @@ Ctrl+Z in Dungeondraft.
   a continuous stroke along a polyline by measuring each pixel's distance to the
   nearest segment and applying the same smoothstep falloff once — a uniform-width
   ribbon for roads/trails, with no gaps or double-painted overlaps (the reason
-  stamping many `paint_terrain` dabs reads as dotty). All three are undoable.
+  stamping many `paint_terrain` dabs reads as dotty).
 - **terrain splat** — `splatImage` is RGBA = weights of slots 0–3; `splatImage2`
   = slots 4–7. `set_terrain_slot` / `SetTexture(tex, slot)` swap a slot's texture
   **globally** (everywhere that slot is weighted), so to texture one region you
@@ -403,8 +378,7 @@ Ctrl+Z in Dungeondraft.
   malformed the seam corner; removed. The single-`Set` ridge model has no seam.)
   `type`: 0=gable, 1=hip, 2=dormer. Roofs have **no color/tint** (the tileset
   renders at its natural color — there is no `SetColor`, unlike walls/patterns)
-  and sit at z 800 (above everything). It is a create (returns an `id`), so
-  `undo` reverses it.
+  and sit at z 800 (above everything). It is a create (returns an `id`).
 - **`dig_cave`** — caves are a separate layer: a `CaveMesh` (a `MeshInstance2D`,
   z -300) whose open/rock state is a Godot **`BitMap`** (one bit per cell;
   `true` = open cave floor). The bridge enables the `CaveBrush` tool (the UI
@@ -419,10 +393,9 @@ Ctrl+Z in Dungeondraft.
   the UI does), `texture` sets the cave floor from the `Caves` asset bank. Note:
   `SetCircle` and the `IsEmpty` flag on the mesh proved unreliable from a mod
   context (an internal grid the BitMap doesn't reflect) — editing the BitMap
-  directly is the path that renders. Undo-recorded (snapshots the BitMap before
-  and after, like the terrain ops). `clear_caves` wipes the whole cave layer back
+  directly is the path that renders. `clear_caves` wipes the whole cave layer back
   to rock in one call (native `CaveMesh.Clear()`, or zero the BitMap as a
-  fallback, then rebuild) — also undoable.
+  fallback, then rebuild).
 - **`add_portal`** — defaults to **wall-mounted** (`Wall.AddPortal`): snaps to
   the nearest wall within `snap_max` woxels, faces along that wall segment, and
   the wall remakes its lines so the portal cuts a gap (matching manual door

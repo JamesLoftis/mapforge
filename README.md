@@ -47,7 +47,7 @@ serves an admin page:
 > **Status: working.** Confirmed end-to-end against Dungeondraft on **Godot
 > 3.4.2** — raw TCP/JSON agent bridging works, no fallback needed. 40 tools
 > across query / create / modify / terrain / levels / selection / capture /
-> camera / undo (see below).
+> camera (see below).
 
 ## What the AI can do
 
@@ -72,10 +72,6 @@ serves an admin page:
 - **Camera:** `get_camera`, `set_camera`, `focus_element` (center on one
   element), `fit_elements` (frame a group) — point the view before a
   `screenshot` to inspect specific spots like a door cut into a wall.
-- **Undo:** the bridge keeps its own undo/redo stacks for create / move / modify
-  / terrain edits, so `undo` / `redo` let the model reliably reverse its own
-  changes (independent of Dungeondraft's Ctrl+Z; `delete_element` is not
-  reversible).
 
 Every element is referenced by an integer `id`; create and list calls return
 ids you feed back into edit calls. Coordinates are woxel (pixel) space — call
@@ -180,8 +176,7 @@ Adding a capability is symmetric — one handler on each side:
    in `register.go`. (If `terraform-provider-dungeondraft` should expose it
    too, that's a third, separate change in that repo.)
 
-Good next targets: pattern shapes (floors), region-scoped terrain fill, and
-grouping a batch of edits into a single undo step.
+Good next targets: pattern shapes (floors) and region-scoped terrain fill.
 
 ### Dev loop (read this before iterating on the mod)
 

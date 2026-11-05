@@ -17,29 +17,18 @@
 # `id` == Dungeondraft's node_id (Global.World.AssignNodeID / GetNodeByID /
 # DeleteNodeByID). Creation commands return the new id; query commands return
 # ids you can pass back to move/modify/delete.
-#
-# Undo: reversible edits push an op onto the bridge's own undo/redo stacks
-# (DD 3.4.2's History.CreateCustomRecord is unreliable); see _record_and_dispatch.
 
 var script_class = "tool"
 
 const HOST := "127.0.0.1"
 const PORT := 8787
-const PROTOCOL_VERSION := 19
+const PROTOCOL_VERSION := 20
 const MAP_EXTENSION := ".dungeondraft_map"
 # Opening or creating a map restarts Dungeondraft's scene, which frees this
 # mod and loads a fresh instance on the new map, so the map op in flight is
 # kept on the Engine singleton (it survives the restart), not in a var.
 const MAP_OP_META := "mcp_bridge_map_op"
 
-# Commands that get wrapped in a Dungeondraft undo record (see _record_and_dispatch).
-const CREATE_CMDS := [
-	"place_object", "draw_wall", "draw_path", "add_light",
-	"add_portal", "add_roof", "add_text", "duplicate_object",
-]
-const TRANSFORM_CMDS := ["move_element", "modify_object"]
-const TERRAIN_CMDS := ["fill_terrain", "fill_region", "paint_terrain", "paint_path"]
-const CAVE_CMDS := ["dig_cave", "clear_caves"]
 # Neutral opaque tint for pattern floors when no color is given. PatternShapeTool
 # has no per-texture default (and its .Color leaks across calls), so we apply a
 # deterministic wood/stone-neutral tone; callers pass an explicit color to override.
@@ -63,8 +52,6 @@ var _connected := false          # stream status == CONNECTED
 var _helloed := false            # agent_hello sent on this connection
 var _backoff := 0                # frames until the next reconnect attempt
 var _hb_frames := 0              # frames since the LAST inbound traffic
-var _undo_stack := []            # bridge-managed undo ops (see _build_op / _apply_op)
-var _redo_stack := []
 var _frame := 0                  # per-update-frame counter
 
 # Reconnect backoff in frames; rewritten connections start retrying quickly,
@@ -202,7 +189,7 @@ func _handle_request(line : String):
 	elif req.has("level"):
 		resp = _dispatch_on_level(req)
 	else:
-		resp = _record_and_dispatch(req)
+		resp = _dispatch(req)
 	# bridge_app matches each reply to its request by req_id.
 	if req.has("req_id"):
 		resp["req_id"] = req["req_id"]
@@ -219,7 +206,7 @@ func _dispatch_on_level(req : Dictionary) -> Dictionary:
 	var previous : int = Global.World.CurrentLevelId
 	if target != previous:
 		Global.World.SetLevel(target, false)
-	var resp = _record_and_dispatch(req)
+	var resp = _dispatch(req)
 	if target != previous:
 		Global.World.SetLevel(previous, false)
 	return resp
@@ -278,185 +265,8 @@ func _refresh_status_label():
 	_label.set_text(text)
 
 
-# Runs a command and, if it succeeded and is a reversible map edit, pushes an op
-# onto the bridge-managed undo stack. We do NOT use Dungeondraft's
-# History.CreateCustomRecord — on 3.4.2 it invokes undo() unreliably and never
-# round-trips redo(). Our own stacks are deterministic and fully under control.
-# Pre-edit state (transform / terrain splat) is captured before the command runs.
-func _record_and_dispatch(req : Dictionary) -> Dictionary:
-	var cmd = req.get("cmd", "")
-
-	var pre = null
-	if cmd in TRANSFORM_CMDS and req.has("id"):
-		var node = Global.World.GetNodeByID(_i(req["id"], -1))
-		if node != null:
-			pre = _snapshot(node)
-
-	# KNOWN GAP: only splatImage (slots 0-3) is snapshotted, never
-	# splatImage2 (slots 4-7) -- undo/redo of a slot 4-7 edit is therefore
-	# incomplete (it won't revert that half of the terrain data). Not fixed
-	# here: this pass is about slots 4-7 being paintable at all (see
-	# _open_splat/_init_splat2), a precondition for this gap mattering.
-	var terrain_before = null
-	if cmd in TERRAIN_CMDS:
-		var lvl = Global.World.GetCurrentLevel()
-		if lvl != null:
-			terrain_before = lvl.Terrain.CloneSplatImage()
-
-	var cave_before = null
-	if cmd in CAVE_CMDS:
-		cave_before = _cave_snapshot()
-
-	var result = _safe_dispatch(req)
-	if typeof(result) == TYPE_DICTIONARY and result.get("ok", false):
-		var op = _build_op(cmd, req, result, pre, terrain_before, cave_before)
-		if op != null:
-			_undo_stack.append(op)
-			_redo_stack = []   # a fresh edit invalidates the redo branch
-	return result
-
-
-# Returns an undo op for a recordable command, or null. Ops are reversed by
-# _apply_op (undo=true) and re-applied (undo=false).
-func _build_op(cmd, req, result, pre, terrain_before, cave_before = null):
-	if cmd in CREATE_CMDS:
-		var id = result["result"].get("id", -1)
-		if id != null and int(id) >= 0:
-			var node = Global.World.GetNodeByID(int(id))
-			if node != null:
-				return { "kind": "create", "node": node, "parent": node.get_parent(), "id": int(id) }
-	elif cmd in TRANSFORM_CMDS and pre != null:
-		var node = Global.World.GetNodeByID(_i(req["id"], -1))
-		if node != null:
-			return { "kind": "transform", "id": _i(req["id"], -1), "old": pre, "new": _snapshot(node) }
-	elif cmd in TERRAIN_CMDS and terrain_before != null:
-		var lvl = Global.World.GetCurrentLevel()
-		if lvl != null:
-			return { "kind": "terrain", "before": terrain_before, "after": lvl.Terrain.CloneSplatImage() }
-	elif cmd in CAVE_CMDS and cave_before != null:
-		var after = _cave_snapshot()
-		if after != null:
-			return { "kind": "cave", "before": cave_before, "after": after }
-	return null
-
-
-func _do_undo() -> Dictionary:
-	if _undo_stack.empty():
-		return _ok({ "undone": false, "reason": "nothing to undo" })
-	var op = _undo_stack.pop_back()
-	_apply_op(op, true)
-	_redo_stack.append(op)
-	return _ok({ "undone": true, "kind": op["kind"], "undo_depth": _undo_stack.size() })
-
-
-func _do_redo() -> Dictionary:
-	if _redo_stack.empty():
-		return _ok({ "redone": false, "reason": "nothing to redo" })
-	var op = _redo_stack.pop_back()
-	_apply_op(op, false)
-	_undo_stack.append(op)
-	return _ok({ "redone": true, "kind": op["kind"], "redo_depth": _redo_stack.size() })
-
-
-func _apply_op(op, undo : bool):
-	match op["kind"]:
-		"create":
-			if undo:
-				_detach_node(op["node"], int(op["id"]))
-			else:
-				_attach_node(op["node"], op["parent"], int(op["id"]))
-		"transform":
-			_apply_props(Global.World.GetNodeByID(int(op["id"])), op["old"] if undo else op["new"])
-		"terrain":
-			_restore_splat(op["before"] if undo else op["after"])
-		"cave":
-			_restore_cave(op["before"] if undo else op["after"])
-
-
-func _detach_node(node, id : int):
-	if is_instance_valid(node) and node.get_parent() != null:
-		node.get_parent().remove_child(node)
-	if Global.World.HasNodeID(id):
-		Global.World.RemoveNodeID(id)
-
-
-func _attach_node(node, parent, id : int):
-	if not is_instance_valid(node):
-		return
-	if node.get_parent() == null and is_instance_valid(parent):
-		parent.add_child(node)
-	Global.World.SetNodeID(node, id)
-	if node.has_method("RemakeLines"):
-		node.RemakeLines()   # walls/paths cache geometry; refresh after re-adding
-
-
-func _apply_props(node, snap):
-	if node == null or snap == null:
-		return
-	if snap.get("position") != null:
-		node.position = snap["position"]
-	if snap.get("rotation") != null:
-		node.rotation = snap["rotation"]
-	if snap.get("scale") != null:
-		node.scale = snap["scale"]
-	if snap.get("shadow") != null:
-		node.set("HasShadow", snap["shadow"])
-	if snap.get("color") != null and node.has_method("SetCustomColor"):
-		node.SetCustomColor(snap["color"])
-
-
-func _restore_splat(img):
-	if img == null:
-		return
-	var level = Global.World.GetCurrentLevel()
-	if level == null:
-		return
-	level.Terrain.RestoreSplat(img)
-	level.Terrain.UpdateSplat()
-
-
-# Deep-copy the cave BitMap for the undo stack (Resource.duplicate(true) so the
-# snapshot isn't aliased to the live bitmap). Returns null if no cave is present.
-func _cave_snapshot():
-	var cave = _cave_mesh()
-	if cave == null or not cave.has_method("get_Bitmap"):
-		return null
-	var bm = cave.call("get_Bitmap")
-	if bm == null:
-		return null
-	return bm.duplicate(true)
-
-
-# Restore a snapshotted cave BitMap and rebuild the mesh (mirror of _restore_splat
-# for the cave layer). A duplicate(true) of the stored snapshot is pushed so the
-# op's snapshot stays pristine across repeated undo/redo.
-func _restore_cave(bm):
-	if bm == null:
-		return
-	var cave = _cave_mesh()
-	if cave == null or not cave.has_method("SetBitmap"):
-		return
-	cave.call("SetBitmap", bm.duplicate(true))
-	if cave.has_method("FinalizeMeshAndBorders"):
-		cave.call("FinalizeMeshAndBorders")
-	cave.call("UpdateMesh")
-
-
-func _snapshot(node) -> Dictionary:
-	var s := {}
-	if node is Node2D:
-		s["position"] = node.position
-		s["rotation"] = node.rotation
-		s["scale"] = node.scale
-	if node.get("HasShadow") != null:
-		s["shadow"] = node.get("HasShadow")
-	if node.get("customColor") != null:
-		s["color"] = node.get("customColor")
-	return s
-
-
-# Dispatch with a guard so a bad command can never take down the TCP loop.
-func _safe_dispatch(req : Dictionary) -> Dictionary:
+# Runs one command and returns its reply.
+func _dispatch(req : Dictionary) -> Dictionary:
 	var cmd = req.get("cmd", "")
 	match cmd:
 		# --- read / query ---
@@ -506,9 +316,6 @@ func _safe_dispatch(req : Dictionary) -> Dictionary:
 		"set_camera": return _set_camera(req)
 		"focus_element": return _focus_element(req)
 		"fit_elements": return _fit_elements(req)
-		# --- history (bridge-managed undo/redo of the model's own edits) ---
-		"undo": return _do_undo()
-		"redo": return _do_redo()
 		# --- selection ---
 		"select_elements": return _select_elements(req)
 		"clear_selection": return _clear_selection()
@@ -846,8 +653,7 @@ func _cave_stroke_segment(bm, a : Vector2, b : Vector2, rad : int, value : bool,
 
 # Wipe the entire cave layer back to solid rock. Uses the native Clear() then
 # rebuilds the mesh; if Clear isn't present, falls back to zeroing the BitMap
-# (set every bit false) and pushing it back — both render via UpdateMesh. This is
-# a CAVE_CMD, so it's BitMap-snapshotted for undo like dig_cave.
+# (set every bit false) and pushing it back — both render via UpdateMesh.
 func _clear_caves(req : Dictionary) -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null: return _err("no map open")
