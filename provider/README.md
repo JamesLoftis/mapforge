@@ -192,6 +192,11 @@ Dungeondraft refuses them (`wrong_map`) while any other map, or an unsaved
 one, is open: state can never be read or changed against the wrong map. Save
 the map to that path before the first apply.
 
+You never need to save after an apply. Once the provider's edits have been
+quiet for 3 seconds, Dungeondraft saves the map to `map_file` itself (also
+after an interrupted apply), so the file always matches state. Opening or
+creating another map first saves any edits still waiting.
+
 ## Levels
 
 A level is identified by its **label**, which Dungeondraft saves; its numeric

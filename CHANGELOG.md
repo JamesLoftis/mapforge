@@ -28,6 +28,16 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
   `save_map` checks the file was written and reports `last_map_op.error`
   when it was not; Dungeondraft itself only logs a failed write.
 
+- The mod saves a map-bound client's edits (Terraform's) to that map once
+  they have been quiet for 3 s; commands wait while it writes, and opening
+  or creating another map saves pending edits first.
+
+### Fixed
+
+- Edits made through the bridge now mark the map modified, so Dungeondraft
+  warns before closing and backs it up; `get_status.modified` reflects them.
+  Setting the static `Master.IsModified` from GDScript never took effect.
+
 ### Removed
 
 - Every MCP tool that creates, changes, deletes, paints terrain, digs caves,

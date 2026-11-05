@@ -13,7 +13,7 @@ const mapOpPollInterval = 250 * time.Millisecond
 type MapStatus struct {
 	MapOpen bool
 	Busy    bool
-	// Modified is Dungeondraft's own unsaved-changes flag (any undoable edit).
+	// Modified is Dungeondraft's own unsaved-changes flag, set by every edit.
 	Modified  bool
 	MapFile   string
 	LastMapOp MapOp

@@ -246,6 +246,19 @@ while DD is minimized, render the map with `export_map` instead (background
 thread, headless).
 | `export_map` | `path`, `ppi=40` | `{ path, ppi, async }` — full-map render on a background thread; poll `path` for the file |
 
+### Autosave
+
+Edits from a client bound to a map (a `map` field, as the Terraform provider
+sends) are saved to that map once such edits have been quiet for 3 seconds,
+so the file matches Terraform state without anyone saving (Terraform has no
+"apply finished" call to save on). While the autosave writes, commands wait
+for it rather than failing as `busy`; an `open_map` or `new_map` arriving
+with edits still unsaved runs the autosave first. It shows in `get_status`
+as `last_map_op` `{ op: "autosave", path, done, error? }`, and the
+Dungeondraft log says `autosave wrote …` or `autosave FAILED …`. Edits
+without `map` (MCP is look-only, so only scripts) mark the map modified but
+are never autosaved.
+
 ### Map lifecycle
 
 All three are asynchronous: the reply `{ started: true }` means Dungeondraft
@@ -254,7 +267,7 @@ accepted the command. Completion shows in `get_status`:
 - `busy` — Dungeondraft's own `Master.IsBusy`: saving, backing up, exporting,
   closing, or computing caves/water.
 - `modified` — Dungeondraft's own unsaved-changes flag (`Master.IsModified`),
-  set by edits made in Dungeondraft's own UI and cleared by a save or open.
+  set by every edit (the UI's and the bridge's) and cleared by a save or open.
 - `map_file` — the open map's file path, `""` when it has never been saved.
 - `last_map_op` — `{ op, path, done, started }` for the most recent of these
   commands (`path` is `""` for `new_map`; `started` is Unix seconds), or `{}`
