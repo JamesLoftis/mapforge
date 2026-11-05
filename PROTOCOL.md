@@ -70,8 +70,35 @@ diagnosable at a glance (see `bridge_app/` for the health page and `/health`).
   (case-insensitive, either slash) and refuses the command with code
   `wrong_map` if they differ or the open map is unsaved. The Terraform
   provider sends it on every command but `ping`.
+- `client` (string, optional) — who sent the command, for the command log
+  (below). The Terraform provider sends `terraform`, the MCP server `mcp`;
+  a frame without it is logged as `other`. The mod ignores it.
 - `id` (any, optional) — echoed back verbatim in the response for correlation.
 - everything else — command-specific parameters.
+
+## Command log
+
+`bridge_app` appends one JSON line per command event to
+`commands_<stamp>.jsonl` in `%APPDATA%\DungeondraftBridge\logs`, next to
+`dd-launch`'s `dd_<stamp>.log` and `bridge_<stamp>.log` for the same launch
+(`-command-log` overrides the path). The `sent` line is written *before*
+the command goes to Dungeondraft, so after a freeze the last `sent` line
+without a `done` names the command, with its exact parameters.
+
+```json
+{"time":"2026-11-04T17:03:49.1234567-05:00","event":"sent","req_id":"…","client":"terraform","conn":3,"cmd":"place_object","request":{…the whole frame…}}
+{"time":"2026-11-04T17:03:49.1301234-05:00","event":"done","req_id":"…","client":"terraform","conn":3,"cmd":"place_object","ok":true,"ms":6}
+```
+
+| `event` | When | Extra fields |
+| --- | --- | --- |
+| `sent` | about to be written to Dungeondraft | `request` |
+| `done` | Dungeondraft answered, or the wait ended (`timeout`, `agent_lost`) | `ok`, `code`, `error`, `ms` |
+| `refused` | answered by `bridge_app` without reaching Dungeondraft (`offline`, `protocol_mismatch`) | `request`, `code`, `error` |
+| `replayed` | a retry answered with the original request's reply | — |
+
+`ping` is answered by `bridge_app` itself and not logged. If the log cannot
+be written, commands still run and `bridge_app`'s own log says so once.
 
 ## Response
 

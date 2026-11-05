@@ -19,6 +19,8 @@ import (
 const (
 	version  = "0.1.0"
 	typeName = "dungeondraft"
+	// clientName names the provider's commands in bridge_app's command log.
+	clientName = "terraform"
 )
 
 // ddProvider is the provider entry point.
@@ -93,6 +95,7 @@ func (p *ddProvider) Configure(ctx context.Context, req provider.ConfigureReques
 	}
 	client := bridge.New(host, port)
 	client.MapFile = model.MapFile.ValueString()
+	client.Name = clientName
 	data := &providerData{client: client, level: model.Level.ValueString()}
 	resp.DataSourceData = data
 	resp.ResourceData = data

@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"dungeondraft-mcp/bridge_app/internal/admin"
 	"dungeondraft-mcp/bridge_app/internal/core"
 	"dungeondraft-mcp/bridge_app/internal/ddwatch"
+	"dungeondraft-mcp/bridge_app/internal/logpaths"
 )
 
 // version is stamped at build time (see scripts/install.ps1); "dev" for a
@@ -31,6 +33,8 @@ func main() {
 	adminAddr := flag.String("admin", "127.0.0.1:8788", "admin HTTP listen address")
 	verbose := flag.Bool("v", false, "log every request/response frame")
 	logFile := flag.String("log", "", "append logs to this file as well as the console")
+	commandLogFile := flag.String("command-log", "", "append the command log (JSON lines) to this file "+
+		`(default: commands_<stamp>.jsonl in %APPDATA%\DungeondraftBridge\logs)`)
 	watchDD := flag.Bool("watch-dd", true, "exit once Dungeondraft.exe has been gone for -watch-grace (Windows only; ignored elsewhere)")
 	watchInterval := flag.Duration("watch-interval", 5*time.Second, "how often to check whether Dungeondraft is still running")
 	watchGrace := flag.Duration("watch-grace", 60*time.Second, "how long Dungeondraft may be gone before bridge_app exits")
@@ -49,12 +53,19 @@ func main() {
 	}
 
 	fmt.Println("==============================================================")
-	fmt.Println("  Dungeondraft Bridge app (protocol v17)")
+	fmt.Printf("  Dungeondraft Bridge app (protocol v%d)\n", core.PROTOCOL_VERSION)
 	fmt.Printf("  wire : tcp://%s\n", *addr)
 	fmt.Printf("  admin: http://%s  (health: curl http://%s/health)\n", *adminAddr, *adminAddr)
 	fmt.Println("==============================================================")
 
-	b := core.New(core.Options{Verbose: *verbose})
+	commandLog, err := openCommandLog(*commandLogFile)
+	if err != nil {
+		log.Fatalf("cannot open command log: %v", err)
+	}
+	defer commandLog.Close()
+	log.Printf("command log: %s", commandLog.Name())
+
+	b := core.New(core.Options{Verbose: *verbose, CommandLog: commandLog})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -74,6 +85,19 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("shutting down")
+}
+
+// openCommandLog opens path for appending, or this launch's default file in
+// the shared logs folder when path is empty.
+func openCommandLog(path string) (*os.File, error) {
+	if path == "" {
+		dir, err := logpaths.Dir()
+		if err != nil {
+			return nil, err
+		}
+		path = filepath.Join(dir, logpaths.CommandLogName(logpaths.Stamp(time.Now())))
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 }
 
 // watchDungeondraft exits the app once Dungeondraft has been observed

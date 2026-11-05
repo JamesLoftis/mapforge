@@ -77,6 +77,9 @@ type Client struct {
 	// MapFile, when set, rides on every command but ping as "map"; the mod
 	// refuses (wrong_map) any command while a different map is open.
 	MapFile string
+	// Name, when set, rides on every command as "client" so bridge_app's
+	// command log can say who sent it ("terraform", "mcp").
+	Name string
 }
 
 // New returns a client for host:port with the defaults bridge_client.py used.
@@ -95,6 +98,9 @@ func (c *Client) Request(ctx context.Context, cmd string, params map[string]any)
 	}
 	if c.MapFile != "" && cmd != "ping" {
 		payload["map"] = c.MapFile
+	}
+	if c.Name != "" {
+		payload["client"] = c.Name
 	}
 	// One id per logical request, reused on every transport retry, so
 	// bridge_app runs a retried command once and replays its reply.

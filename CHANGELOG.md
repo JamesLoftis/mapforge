@@ -17,6 +17,12 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ### Added
 
+- `bridge_app` writes a command log: one JSON line per command, written
+  before the command is forwarded, plus its outcome and duration
+  (`commands_<stamp>.jsonl` beside the other launch logs; see PROTOCOL.md,
+  Command log). Requests carry `client` (`terraform`, `mcp`) to name the
+  sender. A timeout error now names the command it was waiting on.
+
 - Map lifecycle commands `new_map`, `open_map`, `save_map`, and `get_status`
   fields `busy`, `modified`, `map_file`, `last_map_op` (protocol v18).
   `save_map` checks the file was written and reports `last_map_op.error`

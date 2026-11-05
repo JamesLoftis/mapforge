@@ -28,7 +28,9 @@ func main() {
 	host := envOr("DD_BRIDGE_HOST", "127.0.0.1")
 	port := envIntOr("DD_BRIDGE_PORT", 8787)
 
-	a := &app{bridge: bridge.New(host, port)}
+	client := bridge.New(host, port)
+	client.Name = "mcp" // names this server's commands in bridge_app's command log
+	a := &app{bridge: client}
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "dungeondraft-mcp", Version: version}, nil)
 	a.registerTools(server)

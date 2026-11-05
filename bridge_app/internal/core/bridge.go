@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strings"
@@ -69,6 +70,10 @@ type Options struct {
 
 	// WriteTimeout bounds one reply write. Zero means the package default.
 	WriteTimeout time.Duration
+
+	// CommandLog receives one JSON line per command event (PROTOCOL.md,
+	// Command log). Nil means no command log.
+	CommandLog io.Writer
 }
 
 // Stats is the aggregated command accounting surfaced by the admin API.
@@ -150,6 +155,7 @@ type Bridge struct {
 	writeTimeout time.Duration
 	jobs         chan job
 	requests     *requestTable
+	commands     *commandLog
 	startAt      time.Time
 
 	mu         sync.Mutex
@@ -173,7 +179,7 @@ func New(o Options) *Bridge {
 	if o.WriteTimeout == 0 {
 		o.WriteTimeout = WriteTimeout
 	}
-	return &Bridge{
+	b := &Bridge{
 		opts:         o,
 		cmdTimeout:   o.CommandTimeout,
 		hbTimeout:    o.AgentTimeout,
@@ -183,6 +189,8 @@ func New(o Options) *Bridge {
 		conns:        map[int64]*wireConn{},
 		startAt:      time.Now(),
 	}
+	b.commands = newCommandLog(o.CommandLog, b.logf)
+	return b
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +265,8 @@ func (b *Bridge) relay(ctx context.Context, jb job) {
 		return
 	}
 
+	began := time.Now()
+	b.commands.record(entryFor(eventSent, jb).withRequest(jb))
 	agent.rwmu.Lock()
 	if b.opts.Verbose {
 		b.logf("-> agent %s", strings.TrimSpace(string(jb.req.raw)))
@@ -269,14 +279,15 @@ func (b *Bridge) relay(ctx context.Context, jb job) {
 		b.statsRejectOffline(jb.req)
 		return
 	}
-	b.awaitReply(ctx, jb, agent)
+	b.awaitReply(ctx, jb, agent, began)
 }
 
 // awaitReply relays the agent's reply to jb, skipping any reply that names
 // another request (a late answer to one that already timed out).
-func (b *Bridge) awaitReply(ctx context.Context, jb job, agent *wireConn) {
+func (b *Bridge) awaitReply(ctx context.Context, jb job, agent *wireConn, began time.Time) {
 	timeout := time.NewTimer(b.cmdTimeout)
 	defer timeout.Stop()
+	cmd := fstring(jb.req.parsed, "cmd")
 	for {
 		select {
 		case resp := <-agent.respCh:
@@ -287,21 +298,32 @@ func (b *Bridge) awaitReply(ctx context.Context, jb job, agent *wireConn) {
 				b.logf("discarding agent reply for another request: %s", strings.TrimSpace(string(resp.raw)))
 				continue
 			}
-			b.answerRaw(jb, resp.raw)
+			b.finish(jb, resp.raw, began)
 			b.statsRecord(jb.req, resp.raw)
 		case <-timeout.C:
 			b.dropAgent(agent, "no reply within "+b.cmdTimeout.String())
-			b.answer(jb, errorReply(codeTimeout, "bridge timed out waiting for Dungeondraft"))
+			b.finish(jb, marshalReply(errorReply(codeTimeout, fmt.Sprintf(
+				"bridge timed out after %s waiting for Dungeondraft to answer %s", b.cmdTimeout, cmd))), began)
 			b.statsRecord(jb.req, nil)
 		case <-agent.gone:
-			b.answer(jb, errorReply(codeAgentLost, fmt.Sprintf(
-				"Dungeondraft's bridge agent went away while running %s; it may or may not have run",
-				fstring(jb.req.parsed, "cmd"))))
+			b.finish(jb, marshalReply(errorReply(codeAgentLost, fmt.Sprintf(
+				"Dungeondraft's bridge agent went away while running %s; it may or may not have run", cmd))), began)
 			b.statsRecord(jb.req, nil)
 		case <-ctx.Done():
 		}
 		return
 	}
+}
+
+// finish logs the outcome of a command Dungeondraft received and answers it.
+func (b *Bridge) finish(jb job, reply []byte, began time.Time) {
+	b.commands.record(entryFor(eventDone, jb).withOutcome(reply, began))
+	b.answerRaw(jb, reply)
+}
+
+func marshalReply(resp map[string]any) []byte {
+	raw, _ := json.Marshal(resp) // string-keyed maps of strings and bools always marshal
+	return raw
 }
 
 // repliesTo reports whether resp answers jb. A reply without req_id (or a
@@ -311,16 +333,8 @@ func repliesTo(resp frame, jb job) bool {
 	return jb.request == nil || got == "" || got == jb.request.id
 }
 
-// answer replies to jb's user and, for a request Dungeondraft received,
+// answerRaw replies to jb's user and, for a request Dungeondraft received,
 // keeps the reply for any retry of the same req_id.
-func (b *Bridge) answer(jb job, resp map[string]any) {
-	raw, err := json.Marshal(resp)
-	if err != nil {
-		return
-	}
-	b.answerRaw(jb, raw)
-}
-
 func (b *Bridge) answerRaw(jb job, raw []byte) {
 	if jb.request != nil {
 		b.requests.finish(jb.request, raw, time.Now())
@@ -331,6 +345,9 @@ func (b *Bridge) answerRaw(jb job, raw []byte) {
 // answerUnsent replies for a request that never reached Dungeondraft, so a
 // retry of it runs rather than replaying this answer.
 func (b *Bridge) answerUnsent(jb job, resp map[string]any) {
+	refused := entryFor(eventRefused, jb).withRequest(jb)
+	refused.Code, refused.Error = fstring(resp, "code"), fstring(resp, "error")
+	b.commands.record(refused)
 	raw, err := json.Marshal(resp)
 	if err != nil {
 		return
@@ -447,7 +464,7 @@ func (b *Bridge) routeFrame(ctx context.Context, wc *wireConn, fr frame) bool {
 	if id := fstring(fr.parsed, "req_id"); id != "" {
 		request, isRepeat := b.requests.join(id, time.Now())
 		if isRepeat {
-			go b.replay(ctx, wc, request)
+			go b.replay(ctx, job{req: fr, conn: wc}, request)
 			return false
 		}
 		jb.request = request
@@ -461,10 +478,11 @@ func (b *Bridge) routeFrame(ctx context.Context, wc *wireConn, fr frame) bool {
 }
 
 // replay answers a repeated request with the original's reply once it has one.
-func (b *Bridge) replay(ctx context.Context, wc *wireConn, request *pendingRequest) {
+func (b *Bridge) replay(ctx context.Context, repeat job, request *pendingRequest) {
 	select {
 	case <-request.done:
-		b.respondRaw(wc, request.reply)
+		b.commands.record(entryFor(eventReplayed, repeat))
+		b.respondRaw(repeat.conn, request.reply)
 	case <-ctx.Done():
 	}
 }

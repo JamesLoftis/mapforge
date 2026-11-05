@@ -195,3 +195,20 @@ func heartbeatingAgent(t *testing.T, addr string, every time.Duration) *client {
 	}()
 	return cl
 }
+
+// Spec goal 4: when Dungeondraft stops answering, the error names the
+// command it was running.
+func TestTimeoutNamesTheCommand(t *testing.T) {
+	addr, _, _ := startBridge(t, Options{CommandTimeout: 200 * time.Millisecond})
+	agent := helloAgent(t, addr)
+	defer agent.conn.Close()
+	go drain(agent.reader)
+
+	cl := dial(t, addr)
+	defer cl.conn.Close()
+	cl.send(map[string]any{"cmd": "export_map"})
+	m := cl.recvWithin(t, 3*time.Second)
+	if codeOf(m) != "timeout" || !strings.Contains(errStr(m), "export_map") {
+		t.Fatalf("got %v; want code timeout naming export_map", m)
+	}
+}

@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"dungeondraft-mcp/bridge_app/internal/logpaths"
 )
 
 func main() {
@@ -37,13 +39,14 @@ func main() {
 	// unless someone happened to launch from a terminal. Both now always get
 	// a timestamped log file, paired by launch so a bad session's DD and
 	// bridge_app output sit next to each other.
-	logsDir, err := logsDirectory()
+	logsDir, err := logpaths.Dir()
 	if err != nil {
 		log.Fatalf("creating logs directory: %v", err)
 	}
-	stamp := time.Now().Format("20060102_150405")
+	stamp := logpaths.Stamp(time.Now())
 	ddLog := filepath.Join(logsDir, fmt.Sprintf("dd_%s.log", stamp))
 	bridgeLog := filepath.Join(logsDir, fmt.Sprintf("bridge_%s.log", stamp))
+	commandLog := filepath.Join(logsDir, logpaths.CommandLogName(stamp))
 
 	fmt.Printf("starting Dungeondraft: %s (log: %s)\n", *ddPath, ddLog)
 	if err := startDetachedLogged(*ddPath, nil, ddLog); err != nil {
@@ -51,7 +54,7 @@ func main() {
 	}
 
 	fmt.Printf("starting bridge_app: %s (log: %s)\n", bridgeAppPath, bridgeLog)
-	if err := startDetachedLogged(bridgeAppPath, []string{"-log", bridgeLog}, ""); err != nil {
+	if err := startDetachedLogged(bridgeAppPath, []string{"-log", bridgeLog, "-command-log", commandLog}, ""); err != nil {
 		log.Fatalf("starting bridge_app: %v", err)
 	}
 
@@ -76,20 +79,6 @@ func startDetachedLogged(path string, extraArgs []string, ddLog string) error {
 		cmd.Stderr = f
 	}
 	return cmd.Start()
-}
-
-// logsDirectory returns (creating if needed) the shared log directory next
-// to the installed binaries' data root.
-func logsDirectory() (string, error) {
-	base, err := os.UserConfigDir() // %APPDATA% on Windows
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(base, "DungeondraftBridge", "logs")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	return dir, nil
 }
 
 func selfDirectory() (string, error) {
