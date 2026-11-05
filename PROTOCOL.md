@@ -128,6 +128,7 @@ never on the message text. An error without a code is still an error.
 | `level_not_found` | mod | no level has the request's `level` label |
 | `level_ambiguous` | mod | more than one level has the request's `level` label |
 | `label_exists` | mod | `add_level` with a label another level already has |
+| `unsaved_edits` | mod | `open_map` / `new_map` while the last autosave failed; leaving would lose the edits (see Autosave) |
 | `agent_lost` | bridge_app | the agent disconnected or was superseded (Dungeondraft restarted its scene, e.g. `new_map`/`open_map`, or crashed) while running this command; it may or may not have run |
 | `protocol_mismatch` | bridge_app | the connected mod speaks a different protocol version; restart Dungeondraft so it loads the current mod |
 
@@ -251,9 +252,14 @@ thread, headless).
 Edits from a client bound to a map (a `map` field, as the Terraform provider
 sends) are saved to that map once such edits have been quiet for 3 seconds,
 so the file matches Terraform state without anyone saving (Terraform has no
-"apply finished" call to save on). While the autosave writes, commands wait
-for it rather than failing as `busy`; an `open_map` or `new_map` arriving
-with edits still unsaved runs the autosave first. It shows in `get_status`
+"apply finished" call to save on). Dungeondraft writes the file on a
+background thread, so while any save writes (the autosave, `save_map`,
+Ctrl+S, a backup) commands wait for it rather than failing as `busy`, for
+at most 20 s. An `open_map` or `new_map` arriving with edits still unsaved
+runs the autosave first; if that autosave failed, both are refused with
+code `unsaved_edits` until a `save_map` succeeds, since leaving the map
+would lose the edits. `get_status.autosave_pending` is true while edits
+wait for or are being written by the autosave. It shows in `get_status`
 as `last_map_op` `{ op: "autosave", path, done, error? }`, and the
 Dungeondraft log says `autosave wrote …` or `autosave FAILED …`. Edits
 without `map` (MCP is look-only, so only scripts) mark the map modified but

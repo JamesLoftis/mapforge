@@ -14,9 +14,12 @@ type MapStatus struct {
 	MapOpen bool
 	Busy    bool
 	// Modified is Dungeondraft's own unsaved-changes flag, set by every edit.
-	Modified  bool
-	MapFile   string
-	LastMapOp MapOp
+	Modified bool
+	MapFile  string
+	// AutosavePending is true while a map-bound client's edits wait for, or
+	// are being written by, the mod's autosave.
+	AutosavePending bool
+	LastMapOp       MapOp
 	// Counts is the open map's element count per kind ("walls", "paths", ...).
 	Counts map[string]int
 }
@@ -49,10 +52,11 @@ func (c *Client) Status(ctx context.Context) (MapStatus, error) {
 	}
 	op, _ := res["last_map_op"].(map[string]any)
 	return MapStatus{
-		MapOpen:  res["map_open"] == true,
-		Busy:     res["busy"] == true,
-		Modified: res["modified"] == true,
-		MapFile:  stringField(res, "map_file"),
+		MapOpen:         res["map_open"] == true,
+		Busy:            res["busy"] == true,
+		Modified:        res["modified"] == true,
+		MapFile:         stringField(res, "map_file"),
+		AutosavePending: res["autosave_pending"] == true,
 		LastMapOp: MapOp{
 			Op:    stringField(op, "op"),
 			Path:  stringField(op, "path"),

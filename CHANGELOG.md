@@ -31,6 +31,9 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 - The mod saves a map-bound client's edits (Terraform's) to that map once
   they have been quiet for 3 s; commands wait while it writes, and opening
   or creating another map saves pending edits first.
+  Commands wait for any save, not only the autosave, for at most 20 s. If
+  an autosave fails, `open_map` / `new_map` are refused (`unsaved_edits`)
+  until a `save_map` succeeds. `get_status` gains `autosave_pending`.
 
 ### Fixed
 

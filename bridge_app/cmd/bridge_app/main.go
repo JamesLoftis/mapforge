@@ -58,14 +58,12 @@ func main() {
 	fmt.Printf("  admin: http://%s  (health: curl http://%s/health)\n", *adminAddr, *adminAddr)
 	fmt.Println("==============================================================")
 
-	commandLog, err := openCommandLog(*commandLogFile)
-	if err != nil {
-		log.Fatalf("cannot open command log: %v", err)
+	opts := core.Options{Verbose: *verbose}
+	if commandLog := commandLogOrNone(*commandLogFile); commandLog != nil {
+		defer commandLog.Close()
+		opts.CommandLog = commandLog
 	}
-	defer commandLog.Close()
-	log.Printf("command log: %s", commandLog.Name())
-
-	b := core.New(core.Options{Verbose: *verbose, CommandLog: commandLog})
+	b := core.New(opts)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -85,6 +83,18 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("shutting down")
+}
+
+// commandLogOrNone opens the command log, or reports why it cannot and
+// returns nil: a missing log must not stop commands (PROTOCOL.md, Command log).
+func commandLogOrNone(path string) io.WriteCloser {
+	f, err := openCommandLog(path)
+	if err != nil {
+		log.Printf("no command log: %v; commands run without one", err)
+		return nil
+	}
+	log.Printf("command log: %s", f.Name())
+	return f
 }
 
 // openCommandLog opens path for appending, or this launch's default file in

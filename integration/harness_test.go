@@ -136,6 +136,10 @@ func ctx(t *testing.T) context.Context {
 func scratchMap(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), scratchMapFolder)
+	// Runs before the temp dir is removed (cleanups are last-in, first-out):
+	// an autosave into a removed folder would fail, and the mod would then
+	// refuse to leave the map.
+	t.Cleanup(func() { settleAutosave(t) })
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("creating scratch dir: %v", err)
 	}
@@ -145,6 +149,20 @@ func scratchMap(t *testing.T) string {
 	})
 	runMapOp(t, "save_map", path, func(c context.Context) error { return dd.SaveMap(c, path) })
 	return path
+}
+
+// settleAutosave waits until no autosave is pending or writing.
+func settleAutosave(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(mapOpTimeout)
+	for time.Now().Before(deadline) {
+		status, err := dd.Status(ctx(t))
+		if err != nil || !status.AutosavePending {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Errorf("an autosave was still pending after %s", mapOpTimeout)
 }
 
 // saveAndReopen saves the open map to path, reopens it, and waits for both;

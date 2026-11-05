@@ -180,12 +180,7 @@ func TestCommandDuringAutosaveWaits(t *testing.T) {
 // it only logs (see TestSaveMapReportsFailedWrite).
 func TestFailedAutosaveIsReported(t *testing.T) {
 	path := scratchMap(t)
-	if err := os.Remove(path); err != nil {
-		t.Fatalf("removing the scratch file: %v", err)
-	}
-	if err := os.Mkdir(path, 0o755); err != nil {
-		t.Fatalf("creating blocking folder: %v", err)
-	}
+	blockMapFile(t, path)
 	addLight(t, boundClient(path), 100)
 	op := waitForAutosave(t)
 	if op.Error == "" {
@@ -197,6 +192,26 @@ func TestFailedAutosaveIsReported(t *testing.T) {
 	t.Logf("autosave failed as expected: %s", op.Error)
 }
 
+// blockMapFile puts a folder at the map's path, so Dungeondraft's write
+// fails. Cleanup removes it and saves the map there, which clears the failed
+// autosave so later tests can leave the map.
+func blockMapFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("removing the scratch file: %v", err)
+	}
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatalf("creating blocking folder: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(path); err != nil {
+			t.Errorf("removing blocking folder: %v", err)
+			return
+		}
+		runMapOp(t, "save_map", path, func(c context.Context) error { return dd.SaveMap(c, path) })
+	})
+}
+
 func modTime(t *testing.T, path string) time.Time {
 	t.Helper()
 	info, err := os.Stat(path)
@@ -204,4 +219,45 @@ func modTime(t *testing.T, path string) time.Time {
 		t.Fatalf("stat %s: %v", path, err)
 	}
 	return info.ModTime()
+}
+
+// Final review C1: when the autosave a map switch waits for fails, leaving
+// the map would throw Terraform's applied edits away, so the switch is
+// refused and the failure stays in last_map_op.
+func TestFailedAutosaveKeepsTheMapOpen(t *testing.T) {
+	other := scratchMap(t)
+	path := scratchMap(t)
+	blockMapFile(t, path)
+	addLight(t, boundClient(path), 100)
+	err := dd.OpenMap(ctx(t), other)
+	if err == nil {
+		err = dd.WaitMapOp(ctx(t), "open_map", other, mapOpTimeout)
+	}
+	if err == nil || !strings.Contains(err.Error(), "autosave") {
+		t.Fatalf("open_map after a failed autosave: got %v; want a refusal naming the failed autosave", err)
+	}
+	status, _ := dd.Status(ctx(t))
+	if !strings.EqualFold(filepath.Clean(status.MapFile), filepath.Clean(path)) {
+		t.Errorf("open map is %q; the map with unsaved edits %q must stay open", status.MapFile, path)
+	}
+	if op := status.LastMapOp; op.Op != "autosave" || op.Error == "" {
+		t.Errorf("last_map_op = %+v; want the failed autosave", op)
+	}
+}
+
+// Final review I1: Dungeondraft serializes the map on a background thread,
+// so commands wait for any save (save_map, Ctrl+S, backups), not only the
+// mod's autosave.
+func TestCommandsWaitForSaveMap(t *testing.T) {
+	path := scratchMap(t)
+	if err := dd.SaveMap(ctx(t), path); err != nil {
+		t.Fatalf("save_map: %v", err)
+	}
+	status, err := dd.Status(ctx(t))
+	if err != nil {
+		t.Fatalf("get_status: %v", err)
+	}
+	if op := status.LastMapOp; op.Op != "save_map" || !op.Done {
+		t.Fatalf("a command right after save_map ran during the save (last_map_op %+v); it must wait", op)
+	}
 }

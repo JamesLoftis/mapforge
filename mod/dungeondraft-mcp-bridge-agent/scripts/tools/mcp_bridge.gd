@@ -35,9 +35,9 @@ const SAVE_OPS := ["save_map", "autosave"]
 # a map-bound client's edits are saved to that map once they have been quiet
 # this long. Terraform has no "apply finished" call to hook instead.
 const AUTOSAVE_QUIET_MSEC := 3000
-# An autosave Dungeondraft never reports finishing stops holding commands
-# after this long, and is reported as failed.
-const AUTOSAVE_GIVE_UP_MSEC := 30000
+# Commands wait at most this long for a save to finish, under bridge_app's
+# 30 s command timeout; an autosave still unfinished then is reported failed.
+const SAVE_HOLD_LIMIT_MSEC := 20000
 # Commands that change the map: each marks it modified, and one from a
 # map-bound client schedules an autosave.
 const EDIT_CMDS := [
@@ -77,6 +77,8 @@ var _frame := 0                  # per-update-frame counter
 var _autosave_due_msec := 0      # when the pending autosave starts; 0 = none pending
 var _autosave_in_flight := false # an autosave is writing; commands wait for it
 var _autosave_started_msec := 0
+var _hold_started_msec := 0      # when commands began waiting for a save; 0 = not waiting
+var _failed_autosave_path := ""  # a map whose edits the last autosave could not write
 
 # Reconnect backoff in frames; rewritten connections start retrying quickly,
 # then double up to a ~15s cap so a dead app isn't hammered.
@@ -156,8 +158,8 @@ func _read_buffered():
 	var nl = _buf.find("\n")
 	while nl != -1:
 		var line = _buf.substr(0, nl).strip_edges()
-		if _must_wait_for_autosave(line):
-			return   # the line stays buffered until the autosave has written
+		if _must_wait_for_save(line):
+			return   # the line stays buffered until the save has written
 		_buf = _buf.substr(nl + 1)
 		if line != "":
 			_handle_request(line)
@@ -268,15 +270,24 @@ func _is_autosave_pending() -> bool:
 	return _autosave_due_msec > 0
 
 
-# Commands wait while an autosave writes, and a command that would leave the
-# map waits for its pending edits to be saved first.
-func _must_wait_for_autosave(line : String) -> bool:
-	if _autosave_in_flight:
-		return true
-	if _is_autosave_pending() and _is_map_switch(line):
-		_autosave_due_msec = OS.get_ticks_msec()
-		return true
-	return false
+# Dungeondraft serializes the map on a background thread, so commands wait
+# while any save writes (an autosave, save_map, Ctrl+S, a backup), and a
+# command that would leave the map waits for its pending edits to be saved.
+# A save that never ends stops holding commands after SAVE_HOLD_LIMIT_MSEC.
+func _must_wait_for_save(line : String) -> bool:
+	if not (_autosave_in_flight or _is_saving()):
+		_hold_started_msec = 0
+		if _is_autosave_pending() and _is_map_switch(line):
+			_autosave_due_msec = OS.get_ticks_msec()
+			return true
+		return false
+	if _hold_started_msec == 0:
+		_hold_started_msec = OS.get_ticks_msec()
+	return OS.get_ticks_msec() - _hold_started_msec < SAVE_HOLD_LIMIT_MSEC
+
+
+func _is_saving() -> bool:
+	return bool(_master().get("IsSaving"))
 
 
 func _is_map_switch(line : String) -> bool:
@@ -308,12 +319,20 @@ func _start_autosave() -> void:
 
 
 func _give_up_on_unfinished_autosave() -> void:
-	var waited := OS.get_ticks_msec() - _autosave_started_msec
-	if waited < AUTOSAVE_GIVE_UP_MSEC or _is_dungeondraft_busy():
+	if OS.get_ticks_msec() - _autosave_started_msec < SAVE_HOLD_LIMIT_MSEC:
 		return
 	_autosave_in_flight = false
+	_failed_autosave_path = Global.Editor.CurrentMapFile
 	_mark_map_op_failed("autosave", "Dungeondraft never reported the save finishing")
 	print("[mcp-bridge] autosave FAILED: Dungeondraft never reported the save finishing")
+
+
+# Leaving a map whose edits the last autosave could not write would throw
+# Terraform's applied edits away; Master.Load does not ask, as the GUI does.
+func _refuse_to_leave_unsaved_edits():
+	if _failed_autosave_path == "":
+		return null
+	return _err_code("unsaved_edits", "the autosave of %s failed, so leaving it would lose its edits; fix the file and save_map it first" % _failed_autosave_path)
 
 
 # A level is identified by its label, which Dungeondraft saves (its id is
@@ -469,6 +488,7 @@ func _add_map_lifecycle_status(status : Dictionary) -> void:
 	var map_file = Global.Editor.CurrentMapFile
 	status["busy"] = _is_dungeondraft_busy()
 	status["modified"] = bool(_master().get("IsModified"))
+	status["autosave_pending"] = _is_autosave_pending() or _autosave_in_flight
 	status["map_file"] = map_file if map_file != null else ""
 	status["last_map_op"] = Engine.get_meta(MAP_OP_META) if Engine.has_meta(MAP_OP_META) else {}
 
@@ -509,9 +529,12 @@ func _on_save_end() -> void:
 	if _was_written_since(op.path, op.started):
 		# As the GUI does after a save: the map's current file becomes path.
 		Global.Editor.OnOpenedOrSaved(op.path)
+		_failed_autosave_path = ""
 		_mark_map_op_done(op.op)
 		print("[mcp-bridge] %s wrote %s" % [op.op, op.path])
 	else:
+		if op.op == "autosave":
+			_failed_autosave_path = op.path
 		_mark_map_op_failed(op.op, "Dungeondraft did not write the map file (see its log)")
 		print("[mcp-bridge] %s FAILED: Dungeondraft did not write %s" % [op.op, op.path])
 
@@ -563,6 +586,9 @@ func _finish_map_op(op : String, outcome : Dictionary) -> void:
 # window queues a C# NewMapOnStart and restarts the scene. GDScript cannot
 # build that object, so this drives the New window itself.
 func _new_map(req : Dictionary) -> Dictionary:
+	var refusal = _refuse_to_leave_unsaved_edits()
+	if refusal != null:
+		return refusal
 	var width = req.get("width")
 	var height = req.get("height")
 	if not (_is_whole_number_at_least_one(width) and _is_whole_number_at_least_one(height)):
@@ -583,6 +609,9 @@ func _new_map(req : Dictionary) -> Dictionary:
 
 
 func _open_map(req : Dictionary) -> Dictionary:
+	var refusal = _refuse_to_leave_unsaved_edits()
+	if refusal != null:
+		return refusal
 	var path = req.get("path")
 	if not _is_map_file_path(path):
 		return _err("open_map needs path: an absolute path ending in %s (got %s)" % [MAP_EXTENSION, str(path)])
