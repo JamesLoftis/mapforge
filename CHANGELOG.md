@@ -66,6 +66,12 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ### Changed
 
+- One install script, `scripts/install.ps1`, installs everything: the three Go
+  binaries, the Terraform provider (`provider/scripts/install.ps1` is gone), and
+  the junction that lets Dungeondraft load the mod from the checkout
+  (`-ModsDir` for a mods folder other than `%APPDATA%\Dungeondraft\Mods`). It
+  replaces a junction left pointing at another checkout, and never deletes a
+  real folder.
 - **Protocol 21: required means required.** The mod checks every request's
   parameters before it runs and refuses a missing required value, a value of
   the wrong kind (`"abc"` for a number, `"false"` for a bool, a bad colour or
