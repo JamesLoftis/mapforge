@@ -1,237 +1,241 @@
 # MapForge
 
-An MCP server that lets an LLM (Claude Code, Claude Desktop, etc.) drive a
-**running Dungeondraft instance** — place objects, draw walls, inspect the map —
-through Dungeondraft's GDScript modding API.
+Build [Dungeondraft](https://dungeondraft.net/) maps with Terraform.
 
-Dungeondraft has no built-in server to talk to, so this project is **three
-pieces**, all Go except the mod itself, that meet over a localhost socket —
-with a standalone bridge app in the middle, so the wire endpoint is an obvious,
-always-up process instead of a listener hidden inside Dungeondraft. (A
-Terraform provider talks to the same bridge too, but it's developed in its own
-sibling repo, `terraform-provider-dungeondraft` — see that repo, not this one,
-for declarative/`.tf`-driven map building.)
+You describe a map's walls, rooms, doors, objects, lights, patterns, paths,
+terrain and levels in `.tf` files; `terraform apply` builds them in a running
+Dungeondraft, `terraform plan` shows what changed since, and the map file is
+saved for you. A look-only MCP server lets an AI assistant such as Claude see
+the map (status, elements, screenshots) without being able to change it.
+
+## Why it exists
+
+MapForge exists so maps can be built **without a human watching**: the next
+step is a campaign tool that writes Terraform and applies it to generate maps.
+That needs a build path you can trust, so:
+
+- **Terraform is the one way maps get built.** Every change goes through a
+  plan and lands in state, so it can be reviewed, repeated and diffed against
+  what is really on the map.
+- **Required means required.** A missing value, a value of the wrong kind, or
+  one out of range is refused, at plan time by the provider and again by the
+  mod with the error `bad_param`. Nothing is quietly replaced by a default, so
+  a wrong config fails loudly instead of building the wrong map.
+- **Commands go to the right map.** The provider names its map file, and
+  Dungeondraft refuses commands (`wrong_map`) while any other map is open.
+- **Every command is logged** by `bridge_app` before it is forwarded, with its
+  outcome and duration, so any build can be reconstructed afterwards.
+- **The MCP server only looks.** An assistant that could edit the map directly
+  would bypass the plan, the state and the checks; it can look, then change
+  the Terraform.
+
+## How it fits together
 
 ```
-Claude / MCP client
-      │  MCP (stdio)
-      ▼
-mcpserver/   ── Go MCP server  (this repo)
-      │  newline-delimited JSON over TCP  (127.0.0.1:8787)
-      │  (via bridgeclient/, the shared wire client)
-      ▼
-bridge_app/  ── Dungeondraft Bridge app (Go, standalone)
-      │  same protocol; forwards commands to the agent
-      ▼
-mod/      ── Dungeondraft mod  (GDScript, outbound agent inside DD)
-      │  modding API calls
-      ▼
-   the open map  (Objects, Walls, Levels, …)
+terraform apply                    Claude (or any MCP client)
+      │                                  │ MCP, stdio
+      ▼                                  ▼
+provider/  (terraform-provider-     mcpserver/  (look-only)
+            dungeondraft)                │
+      │  JSON lines over TCP 127.0.0.1:8787, via bridgeclient/
+      └──────────────┬───────────────────┘
+                     ▼
+             bridge_app/   ── always-up relay; logs every command;
+                     ▲        admin page on http://127.0.0.1:8788
+                     │  the mod dials out to the app
+             mod/  (TF Bridge Agent, GDScript inside Dungeondraft)
+                     │  Dungeondraft modding API
+                     ▼
+                the open map
 ```
 
-The bridge app owns `tcp://127.0.0.1:8787` and talks to the mod over the same
-protocol in reverse: the mod dials the app as an **agent** and answers the user
-commands the app forwards (see [PROTOCOL.md](PROTOCOL.md) for the roles). This
-keeps Dungeondraft out of the "is the bridge up?" question — `ping` is answered
-by the app, and a crashed mod shows up as a clear `dungeondraft offline` reply
-instead of a refused connection. `bridge_app` also watches for Dungeondraft
-itself: it exits shortly after `Dungeondraft.exe` closes, so it doesn't linger
-for hours after a session ends the way a hand-started process can — see
-[dd-launch](#1-install-everything), which starts both together. The app also
-serves an admin page:
+The mod does not listen on a port: it connects out to `bridge_app` and runs the
+commands the app forwards to it, one at a time. If Dungeondraft is closed or
+the mod crashes, the app stays up and answers with a clear `offline` error.
+`bridge_app` exits on its own shortly after Dungeondraft closes. The wire
+protocol is in [PROTOCOL.md](PROTOCOL.md).
 
-- `http://127.0.0.1:8788/` — live status (agent connected, heartbeats, connections, queue depth)
-- `http://127.0.0.1:8788/health` — JSON health for scripts
-- `http://127.0.0.1:8788/connections` — who is connected right now
+## Requirements
 
-> **Status: working.** Confirmed end-to-end against Dungeondraft on **Godot
-> 3.4.2** — raw TCP/JSON agent bridging works, no fallback needed. The MCP
-> server is look-only: 15 tools across query / capture / view (see below).
-> Maps are built with the Terraform provider in `provider/`.
+- Windows (the install script, `dd-launch` and the Dungeondraft watcher are
+  Windows-only).
+- Dungeondraft **1.2.0.1** (Godot 3.4.2).
+- Go **1.25.6** or later.
+- Terraform (tested with **1.16.0**).
+- For the MCP side, an MCP client such as Claude Code.
 
-## What the AI can do
+## Install
 
-The MCP server only looks at the map; it cannot create, change, delete,
-paint, select or undo anything. Build and change maps with Terraform
-(`provider/README.md`), so every change goes through a plan and lands in
-state.
+```powershell
+git clone https://github.com/JamesLoftis/mapforge.git
+cd mapforge
+.\scripts\install.ps1
+```
 
-- **Inspect:** `get_status`, `list_levels`, `list_elements`, `get_element`,
-  `dump_state` (whole-level snapshot in one call),
-  `list_asset_categories`, `list_assets` (with substring search).
-- **See:** `screenshot` (current window) and `export_map` (clean full-map
-  render) return images, so the model can look at its own work and iterate.
-- **View:** `set_level` (which level the editor shows), `get_camera`,
-  `set_camera`, `focus_element` (center on one
-  element), `fit_elements` (frame a group) — point the view before a
-  `screenshot` to inspect specific spots like a door cut into a wall.
+The script is the deploy step; re-run it after every `git pull` or local edit.
+It:
 
-Every element is referenced by an integer `id`; list calls return ids you
-pass to `get_element` and `focus_element`. Coordinates are woxel (pixel) space — call
-`get_status` for `map_center`. Discover assets with `list_assets`.
+- builds `mcpserver.exe`, `bridge_app.exe` and `dd-launch.exe` into
+  `%LOCALAPPDATA%\DungeondraftBridge\bin\`, stamped with a version from
+  `git describe`;
+- builds the Terraform provider into Terraform's local mirror
+  (`%APPDATA%\terraform.d\plugins\registry.terraform.io\jamesloftis\dungeondraft\<version>\windows_amd64`),
+  so `terraform init` finds it with no extra configuration;
+- links Dungeondraft's mods folder to the mod in your checkout
+  (`%APPDATA%\Dungeondraft\Mods\dungeondraft-mcp-bridge-agent`, a junction).
+  If your mods folder is elsewhere, pass it:
+  `.\scripts\install.ps1 -ModsDir D:\Dungeondraft\Mods`.
 
-## Setup
+Close Claude Code first if it is running `mcpserver.exe`: Windows will not
+overwrite a running program.
 
-**Prerequisites:** [Dungeondraft](https://dungeondraft.net/) (tested on the
-Godot 3.4.2 builds), Go **1.25+**, and an MCP client (e.g. Claude Code or
-Claude Desktop). PowerShell is used for the install script; everything else is
-plain `go build`.
+Then:
 
-### 1. Install everything
+1. Start Dungeondraft through
+   `%LOCALAPPDATA%\DungeondraftBridge\bin\dd-launch.exe` (point your shortcut at
+   it). It starts Dungeondraft and `bridge_app` together and writes their logs.
+2. In Dungeondraft, enable the **TF Bridge Agent** mod.
+3. Check the chain: `curl http://127.0.0.1:8788/health` shows
+   `"dd_connected": true`.
 
-1. In Dungeondraft's title screen, open **Mods** and note (or set) your mods
-   folder, then copy `mod/dungeondraft-mcp-bridge-agent/` into it and enable
-   **TF Bridge Agent** in the mod list.
-2. Build and install the three Go binaries to a stable location outside the
-   repo (`%LOCALAPPDATA%\DungeondraftBridge\bin\`), version-stamped from
-   `git describe` so a stale build is never a guessing game:
+## Your first map
+
+1. In Dungeondraft, create a map and save it, for example to
+   `C:/maps/first.dungeondraft_map`. Leave it open.
+2. Copy `provider/examples/room` somewhere and run:
 
    ```powershell
-   .\scripts\install.ps1
+   terraform init
+   terraform apply -var map_file=C:/maps/first.dungeondraft_map
    ```
 
-   Re-run it after every `git pull` or local edit — it *is* the deploy step.
-3. From now on, launch Dungeondraft via the installed `dd-launch.exe` instead
-   of `Dungeondraft.exe` directly (point your shortcut at it) — it starts DD
-   and `bridge_app.exe` together. `bridge_app` then watches for DD's process
-   and exits on its own a little while after DD closes, so nothing lingers.
+   A room with a floor and a door appears in the middle of the map.
+3. Run `terraform plan` again: it reports **No changes**. Move something in
+   Dungeondraft and plan again: Terraform shows the drift.
 
-On DD's load you should see in its log:
+Every config starts with the provider block:
 
+```hcl
+terraform {
+  required_providers {
+    dungeondraft = { source = "registry.terraform.io/jamesloftis/dungeondraft" }
+  }
+}
+
+provider "dungeondraft" {
+  map_file = "C:/maps/first.dungeondraft_map" # required: the map this state belongs to
+  level    = "Ground"                         # default level for every element
+  # host and port default to 127.0.0.1 and 8787
+}
 ```
-[mcp-bridge] agent mode: bridging to tcp://127.0.0.1:8787 (protocol v17)
-[mcp-bridge] connected to bridge app at 127.0.0.1:8787
-```
 
-The mod doesn't listen for connections — it dials the bridge app, so it's fine
-(and normal) for the mod to load before or after the app is started; it
-retries with backoff. If the mod isn't connected yet,
-`curl http://127.0.0.1:8788/health` still answers `200` with
-`dd_connected: false` — that's the point: "app up, Dungeondraft down" is
-visible at a glance, not a refused connection.
+The resources (`dungeondraft_wall`, `_room`, `_portal`, `_object`, `_light`,
+`_roof`, `_text`, `_pattern`, `_path`, `_terrain_fill`, `_cave`, `_level`), the
+data sources, how levels and drift work, and which changes replace an element
+are in the [provider reference](provider/README.md). More worked examples are in
+[`provider/examples`](provider/examples) (`demo`, `throne_room`, `level`,
+`terrain_brush`).
 
-### 2. Verify the bridge works
+**Saving.** You never need to save after an apply: once the provider's edits
+have been quiet for 3 seconds, Dungeondraft saves the map to `map_file` itself.
 
-With DD open and a map loaded, `curl http://127.0.0.1:8788/health` confirms
-`dd_connected: true`, and calling `ping`/`get_status` through your MCP client
-confirms the whole chain end to end.
+**Finding asset paths.** With Dungeondraft open,
+`cd provider; go run ./cmd/catalog` writes every asset path in every category
+to `asset_catalog.json`. In Terraform, the `dungeondraft_assets` data source
+searches one category.
 
-### 3. Wire up your MCP client
+## Looking at the map through MCP
 
-Register the installed binary by its **absolute path**. For **Claude Code**:
+Register the installed server with Claude Code:
 
 ```powershell
 claude mcp add dungeondraft -s user -- "$env:LOCALAPPDATA\DungeondraftBridge\bin\mcpserver.exe"
 ```
 
-Reconnect (`/mcp` in Claude Code) so the server loads. Or add to a client
-config (e.g. Claude Desktop `claude_desktop_config.json`):
+Reconnect (`/mcp`). Other clients take the same absolute path as `command`.
+The server has 15 tools, none of which change the map:
 
-```json
-{
-  "mcpServers": {
-    "dungeondraft": {
-      "command": "C:/Users/you/AppData/Local/DungeondraftBridge/bin/mcpserver.exe"
-    }
-  }
-}
-```
+- **Inspect:** `ping`, `get_status`, `list_levels`, `list_elements`,
+  `get_element`, `dump_state`, `list_asset_categories`, `list_assets`.
+- **See:** `screenshot` (the window) and `export_map` (a clean render of the
+  whole map), returned as images.
+- **View:** `set_level`, `get_camera`, `set_camera`, `focus_element`,
+  `fit_elements`, to point the view before a screenshot.
 
-Then ask the model things like *"what's the status of my Dungeondraft map?"* or
-*"list some object assets and drop a chair in the middle of the map."*
+`mcpserver` reads `DD_BRIDGE_HOST` (default `127.0.0.1`) and `DD_BRIDGE_PORT`
+(default `8787`) if `bridge_app` runs elsewhere.
 
-## Configuration
+## Troubleshooting
 
-These env vars configure `mcpserver` (set them where the MCP client launches
-it). The defaults match the bridge app, so you only need them if you run the
-app on a different port (`-addr`).
+Errors carry a code (full list in [PROTOCOL.md](PROTOCOL.md#error-codes)):
 
-| Env var | Default | Purpose |
+| Code | What it means | What to do |
 | --- | --- | --- |
-| `DD_BRIDGE_HOST` | `127.0.0.1` | host the server connects to |
-| `DD_BRIDGE_PORT` | `8787` | port the server connects to (match the app's `-addr`) |
+| `bad_param` | A value is missing, the wrong kind or out of range; nothing ran. The message names the parameter. | Fix that value in the config. |
+| `wrong_map` | The open map is not the provider's `map_file`. | Open that map, saved at that exact path, in Dungeondraft. |
+| `offline` | Dungeondraft is not connected to `bridge_app`. | Start Dungeondraft through `dd-launch` and enable the mod. |
+| `timeout` | Dungeondraft did not answer within 30 s. | Check Dungeondraft is not stuck in a dialog; read its log. |
+| `agent_lost` | Dungeondraft restarted or crashed during a command. | Re-run; read its log. |
+| `protocol_mismatch` | The loaded mod is older or newer than `bridge_app`. | Re-run the install script and restart Dungeondraft. |
+| `unsaved_edits` | The last autosave failed, so leaving the map would lose edits. | Save the map, then retry. |
+| `level_not_found` | No level has that label. | Check the `level` names. |
 
-`bridge_app` has its own flags (`-addr`, `-admin`, `-watch-dd`, `-watch-interval`,
-`-watch-grace`, `-dd-exe`) — see `bridge_app/README.md`.
+**Logs** are in `%APPDATA%\DungeondraftBridge\logs`, one set per launch:
+`dd_<stamp>.log` (Dungeondraft's own output, including GDScript errors),
+`bridge_<stamp>.log`, and `commands_<stamp>.jsonl` (every command and its
+outcome). `bridge_app`'s status page is at `http://127.0.0.1:8788/`, with
+`/health` and `/connections` as JSON.
 
-## Extending
+**`mcpserver.exe` is in use during install:** close every Claude Code session
+(or run `Stop-Process -Name mcpserver`), then re-run the script.
 
-Adding a capability is symmetric — one handler on each side:
+**The mod does not load:** Dungeondraft's mod loader stops at the first
+GDScript error in any mod; the error is in `dd_<stamp>.log`.
 
-1. **Mod** (`mod/.../scripts/tools/mcp_bridge.gd`): add a `case` to the `match`
-   in `_safe_dispatch()` and a `_my_command(req)` function returning
-   `_ok(...)` / `_err(...)`.
-2. **MCP server** (`mcpserver/cmd/mcpserver/`): add an input struct + handler
-   method (follow the pattern in `tools_*.go` — build a `params` map, call
-   `a.forward(ctx, "my_command", params)`), then register it with `addTool(...)`
-   in `register.go`. (If `terraform-provider-dungeondraft` should expose it
-   too, that's a third, separate change in that repo.)
-
-Good next targets: pattern shapes (floors) and region-scoped terrain fill.
-
-### Dev loop (read this before iterating on the mod)
-
-Three things will bite you if you don't know them up front:
-
-- **The bridge app, the mod, and the MCP server reload differently.**
-  GDScript changes in `mcp_bridge.gd` take effect when you **reload the mod
-  inside Dungeondraft** (or restart DD). Changes to `bridge_app` or
-  `mcpserver` need a rebuild — run `.\scripts\install.ps1` — then, for
-  `mcpserver`, an **MCP reconnect** (`/mcp` in Claude Code); for `bridge_app`,
-  restart it (or just close/reopen DD via `dd-launch`, since it now watches
-  DD's lifecycle). Adding a *new* command needs at least the mod's handler and
-  `mcpserver`'s tool registration; if `terraform-provider-dungeondraft` should
-  expose it too, that's a separate change in that sibling repo.
-
-- **There's no live `eval`/introspect command**, so probing a running node's
-  properties needs a mod reload. When a DD API behaves unexpectedly (e.g. a
-  setter that doesn't stick), a quick way to diagnose it is to **return
-  intermediate state in the response** — stash before/after values in a debug
-  field — so one reload shows where a value changes.
-
-- **A crashed mod no longer kills the bridge.** The app keeps running and
-  reports `dungeondraft offline: bridge agent not connected`. If the mod
-  crashes, DD's log will show the GDScript error — if DD itself isn't running
-  from a console you won't see it; relaunching DD from a terminal
-  (`& "C:\Program Files\Dungeondraft\Dungeondraft.exe"`) surfaces stdout/stderr,
-  including `SCRIPT ERROR:` parse failures that otherwise fail completely
-  silently (a single bad line in the mod script aborts Dungeondraft's *entire*
-  mod loader, not just this mod). Restart DD (or reload the mod) and the agent
-  reconnects with backoff.
-
-## Layout
+## Development
 
 ```
-bridgeclient/                  shared Go wire-protocol client (this repo's mcpserver/ uses it;
-                                terraform-provider-dungeondraft, a sibling repo, vendors its own copy)
-  client.go                    dial-per-request client, retry/backoff, error classification
-  client_test.go               offline tests (fake bridge over a real socket)
-mcpserver/                     the Go MCP server (this is what an MCP client launches)
-  cmd/mcpserver/main.go        entrypoint (stdio transport)
-  cmd/mcpserver/register.go    every tool's name/description -> handler wiring
-  cmd/mcpserver/tools_*.go     input structs + handlers, grouped like PROTOCOL.md
-  cmd/mcpserver/tools_capture.go  screenshot/export_map (the two tools returning images)
-  cmd/mcpserver/limits.go      context-size guardrails (capped limit/ppi, dump_state/image size ceilings)
-bridge_app/                    the standalone Dungeondraft Bridge app (Go)
-  cmd/bridge_app/main.go       entrypoint (wire :8787, admin :8788, DD-lifecycle watcher)
-  cmd/dd-launch/main.go        starts Dungeondraft.exe + bridge_app.exe together
-  internal/core/bridge.go      TCP server, agent link, forwarding, stats, queue depth
-  internal/core/bridge_test.go offline tests (fake agent + users over sockets)
-  internal/admin/admin.go      /health, /connections, status page
-  internal/ddwatch/            "is Dungeondraft.exe running?" (Windows toolhelp snapshot)
-mod/dungeondraft-mcp-bridge-agent/   the Dungeondraft mod (copy into DD's mods folder)
-  mcp_bridge.ddmod             manifest
-  scripts/tools/mcp_bridge.gd  outbound agent + command handlers
-scripts/install.ps1            builds + deploys mcpserver/bridge_app/dd-launch to %LOCALAPPDATA%\DungeondraftBridge\bin\
-PROTOCOL.md                    wire protocol + implementation notes (shared contract with terraform-provider-dungeondraft)
-go.work                        ties bridgeclient/bridge_app/mcpserver together for local dev
+bridgeclient/   the shared Go client for the wire protocol (provider and mcpserver use it)
+bridge_app/     the relay (cmd/bridge_app) and the launcher (cmd/dd-launch)
+mcpserver/      the look-only MCP server
+provider/       the Terraform provider, its examples, and cmd/catalog
+mod/            the Dungeondraft mod: one GDScript file, scripts/tools/mcp_bridge.gd
+mod_tests/      tests for the mod's GDScript logic (run with a Godot 3.4.2 editor)
+integration/    tests against a live Dungeondraft, through bridge_app and Terraform
+scripts/        install.ps1 and its Pester tests (scripts/tests)
+docs/           design specs and plans (docs/superpowers), and a checklist
 ```
+
+**Tests.**
+
+- Unit tests: `go test ./...` in `bridgeclient`, `bridge_app`, `mcpserver` and
+  `provider`. Script tests: `Invoke-Pester scripts/tests` in PowerShell.
+- Live tests: `cd integration; go test -tags integration ./...`. They need
+  Dungeondraft running with the mod, `bridge_app` up, and a **scratch map**
+  open: they create and delete elements on it.
+
+**Rules worth knowing.**
+
+- The mod must stay a **single `.gd` file**: a second script file anywhere in
+  the mod's folder crashes Dungeondraft's mod loader.
+- The mod and `bridge_app` share a protocol version (`PROTOCOL_VERSION` in
+  `mcp_bridge.gd` and `bridge_app/internal/core/bridge.go`); change both
+  together, and record it in [CHANGELOG.md](CHANGELOG.md).
+- A change to the mod takes effect when Dungeondraft restarts; a change to the
+  Go programs after re-running the install script (and `/mcp` for
+  `mcpserver`).
+- Plans and open work: [ROADMAP.md](ROADMAP.md).
 
 ## Credits
 
-Built against the [Dungeondraft Modding API](https://megasploot.github.io/DungeondraftModdingAPI/).
-Engine is Godot 3.4.2, so the GDScript uses Godot 3 networking class names.
+Parts of MapForge, and most of its inspiration, come from Brandon Florian's
+[dungeondraft-mcp](https://github.com/brann-dev/dungeondraft-mcp): the idea of
+driving Dungeondraft from outside through a mod and a local bridge, and the
+original mod, bridge and MCP server this project grew from.
+
+Built against the
+[Dungeondraft Modding API](https://megasploot.github.io/DungeondraftModdingAPI/).
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE), copyright Brandon Florian and JamesLoftis.

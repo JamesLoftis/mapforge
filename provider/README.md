@@ -1,131 +1,21 @@
-# Terraform provider: dungeondraft
+# Provider reference: dungeondraft
 
-Declaratively build maps in a **running Dungeondraft** instance, using Terraform
-to plan/diff/apply the elements (walls, doors, objects, lights, roofs, text,
-patterns, paths, terrain) of the open map.
-
-The provider is a single static Go binary built on
-[`terraform-plugin-framework`](https://developer.hashicorp.com/terraform/plugin/framework).
-It does **not** go through the MCP server — it talks directly to `bridge_app`'s
-TCP/JSON wire protocol (see `PROTOCOL.md` in the repo root) using the shared
-`bridgeclient` module, exactly like `mcpserver` does.
-
-```
-terraform apply
-      │
-      ▼
-terraform-provider-dungeondraft (this binary)
-      │  {"cmd":...}\n in, {"ok":...}\n out  (bridge_app on 127.0.0.1:8787)
-      ▼
-bridge_app  ⇄  mcp_bridge.gd (the Dungeondraft mod)
-      ▼
-   the open map
-```
-
-## Prerequisites
-
-- Dungeondraft running with the **MCP Bridge Agent** mod enabled and **a map
-  open**. The provider only talks to a live map — it cannot create one.
-- The standalone **bridge app** owning the wire port (default `127.0.0.1:8787`).
-  Start/stage it with `.\scripts\install.ps1` in the repo root (installs
-  `bridge_app.exe`, `mcpserver.exe`, `dd-launch.exe` to
-  `%LOCALAPPDATA%\DungeondraftBridge\bin`).
-- The Terraform CLI (this repo's development workflow can pass a local
-  `terraform.exe`; see below).
+The Terraform provider that builds maps in a running Dungeondraft, through
+`bridge_app` (see the [root README](../README.md) for installing it and a first
+map, and [PROTOCOL.md](../PROTOCOL.md) for the commands it sends). It is built
+on [`terraform-plugin-framework`](https://developer.hashicorp.com/terraform/plugin/framework)
+and talks to `bridge_app` with the shared `bridgeclient` module.
 
 ## Provider config
 
 ```hcl
 provider "dungeondraft" {
-  host = "127.0.0.1"   # optional, default 127.0.0.1
-  port = 8787          # optional, default 8787 (matches DD_BRIDGE_PORT)
+  map_file = "C:/maps/keep.dungeondraft_map" # required, absolute path
+  level    = "Ground"   # optional: the level elements go on unless a resource sets its own
+  host     = "127.0.0.1" # optional, default 127.0.0.1
+  port     = 8787        # optional, default 8787
 }
 ```
-
-## Testing against the local build (before publishing)
-
-The provider address is `registry.terraform.io/jamesloftis/dungeondraft`
-(`provider/main.go`). Until it is published to the registry you must point
-Terraform at the freshly built binary rather than letting it try to download
-the package.
-
-### Option A — CLI config dev_overrides (easiest)
-
-1. Build the provider binary:
-
-   ```powershell
-   cd provider
-   go build -o terraform-provider-dungeondraft.exe .
-   ```
-
-2. Create a Terraform **CLI config** that maps the provider address to that
-   binary and disables the plugin cache (dev builds must not be cached):
-
-   `%APPDATA%\terraform.rc` (or pass `-chdir`/`TF_CLI_CONFIG_FILE`):
-
-   ```hcl
-   provider_installation {
-     dev_overrides {
-       "registry.terraform.io/jamesloftis/dungeondraft" = "C:\\path\\to\\dir\\containing\\terraform-provider-dungeondraft.exe"
-     }
-     direct {}
-   }
-   ```
-
-   With dev_overrides, `terraform init` is **not** required for the provider and
-   `terraform plan` will note that the provider is "overridden by
-   dev_overrides".
-
-3. Run against an example (`demo/` floods the map with a small scene; run it on
-   a **scratch map** first, since `dungeondraft_terrain_fill` repaints whole
-   areas):
-
-   ```powershell
-   terraform -chdir=examples\demo init -input=false   # only for backends/locks; provider is override-dn
-   terraform -chdir=examples\demo plan
-   terraform -chdir=examples\demo apply -auto-approve
-   ```
-
-### Option B — filesystem mirror
-
-Build the binary and drop it into a local mirror layout, then reference the
-mirror with `-plugin-dir`:
-
-```
-<mirror>\registry.terraform.io\jamesloftis\dungeondraft\<version>\terraform-provider-dungeondraft.exe
-```
-
-(Keep `version` in sync with `ddprovider.version`.)
-
-## Development utilities
-
-- `go run ./cmd/catalog` — write every asset path in every category from the
-  live bridge to `asset_catalog.json`, a reference for writing Terraform.
-
-## Known risk: saving right after a bulk apply
-
-`ROADMAP.md` documents an observed bug: **Dungeondraft
-saves can fail/corrupt when attempted shortly after live bridge activity**
-(three consecutive saves failed immediately after tool-call activity in one
-session; a save after ~15-20s of bridge idle time succeeded). The bridge
-rewrite to `bridge_app` (dial-per-request client, outbound-agent mod
-connection) was intended to remove the lingering-connection cause of this,
-but it has not been re-verified against save-reliability specifically as its
-own acceptance criterion — treat it as **mitigated, not confirmed fixed**.
-
-This provider's `Client.Request` opens and closes a fresh TCP connection per
-bridge call (see `internal/bridge/client.go`), so it holds nothing open
-between calls — but a `terraform apply` that creates many resources still
-means a burst of back-to-back bridge activity immediately before whatever
-save happens next, which is exactly the trigger condition described above.
-This is **not specific to any one resource kind** (`dungeondraft_light` and
-`dungeondraft_path` were flagged as suspect in one downstream project's
-bisection, but their Create calls send exactly what `PROTOCOL.md` specifies
-— nothing in this provider's code is unique to those two).
-
-Until save-reliability is independently re-verified: after a large `apply`,
-save manually and confirm the save in Dungeondraft before doing more bridge
-work, rather than chaining a big apply straight into an autosave/close.
 
 ## Resources
 
@@ -169,8 +59,8 @@ stroke by re-running it with `dig` inverted (see the package doc comment on
 of `fill_terrain`/`fill_region` when you give it `x`+`y` (a single brush
 dab) or `points`+`radius` together (a brush stroke) — see its own schema
 description for the full four-way selection. `clear_caves` (wipe the whole
-Caves layer) has no resource: like `undo`/`redo`/camera/selection, it has
-no created identity to track or diff against.
+Caves layer) has no resource: like the camera commands, it has no created
+identity to track or diff against.
 
 ## Map binding
 
@@ -276,4 +166,4 @@ x/y (`move_element`) and rotation/scale/color (`modify_object`), and
 
 - `PROTOCOL.md` (repo root) — the full wire protocol and per-command semantics.
 - `examples/demo/` and `examples/throne_room/` — worked `.tf` plans.
-- `../ROADMAP.md` — design notes and the write-mostly → real-Read trajectory.
+- `../ROADMAP.md` — open work.
