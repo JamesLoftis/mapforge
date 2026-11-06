@@ -4,7 +4,8 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvoca
 # on it (de-fork design, "the rename rule"), or in history.
 $allowedPaths = @(
     '^CHANGELOG\.md:',
-    '^docs/superpowers/'
+    '^docs/superpowers/',
+    '^scripts/tests/OldNames\.Tests\.ps1:'  # this test's own search pattern
 )
 $allowedText = @(
     'dungeondraft-mcp-bridge-agent',  # the mod folder Dungeondraft knows the mod by
