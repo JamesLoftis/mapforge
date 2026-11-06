@@ -815,7 +815,7 @@ func _list_assets(req : Dictionary) -> Dictionary:
 	var category = req.get("category", "Objects")
 	var search = str(req.get("search", "")).to_lower()
 	var limit = _i(req.get("limit", 100), 100)
-	if limit < 0: limit = 0
+	if limit < 0: return _out_of_range(req["cmd"], "limit", "at least 0", limit)
 	var all = Script.GetAssetList(category)
 	if all == null:
 		return _err("unknown asset category: " + str(category))
@@ -976,7 +976,7 @@ func _list_elements(req : Dictionary) -> Dictionary:
 	if not COLLECTIONS.has(kind):
 		return _err("unknown kind '%s' (one of: %s)" % [kind, COLLECTIONS.keys()])
 	var limit = _i(req.get("limit", 200), 200)
-	if limit < 0: limit = 0
+	if limit < 0: return _out_of_range(req["cmd"], "limit", "at least 0", limit)
 	var out := []
 	# Wall-mounted portals (doors/windows) live inside each wall's `Portals`
 	# array, NOT in level.Portals — so listing "portals" must also walk the
@@ -1188,6 +1188,10 @@ func _draw_path(req : Dictionary) -> Dictionary:
 	if tex == null: return _err("could not load path asset: " + str(req.get("asset")))
 	var layer = _i(req.get("layer", 0), 0)
 	if layer < 0: return _err("'layer' must be >= 0")
+	var smoothness = _num(req.get("smoothness", 0.0), 0.0)
+	if smoothness < 0.0: return _out_of_range("draw_path", "smoothness", "at least 0", smoothness)
+	var width = _num(req.get("width", 1.0), 1.0)
+	if width <= 0.0: return _out_of_range("draw_path", "width", "more than 0", width)
 	var path = level.Pathways.CreatePath(
 		tex, layer, _i(req.get("sorting", 0), 0),
 		bool(req.get("fade_in", false)), bool(req.get("fade_out", false)),
@@ -1199,12 +1203,10 @@ func _draw_path(req : Dictionary) -> Dictionary:
 	path.set_meta("preview", false)
 	path.SetEditPoints(pts)
 	if req.has("smoothness"):
-		path.Smoothness = max(_num(req["smoothness"], 0.0), 0.0)
+		path.Smoothness = smoothness
 		path.Smooth()
 	if req.has("width"):
-		var pw = _num(req["width"], 1.0)
-		if pw <= 0.0: return _err("'width' must be > 0")
-		path.SetWidthScale(pw)
+		path.SetWidthScale(width)
 	path.UpdateGradient()
 	return _ok({ "id": _id(path), "points": _points_list(pts) })
 
@@ -1212,14 +1214,18 @@ func _draw_path(req : Dictionary) -> Dictionary:
 func _add_light(req : Dictionary) -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null: return _err("no map open")
+	var energy = _num(req.get("energy", 1.0), 1.0)
+	if energy < 0.0: return _out_of_range("add_light", "energy", "at least 0", energy)
+	var light_range = _num(req.get("range", 1.0), 1.0)
+	if light_range < 0.01: return _out_of_range("add_light", "range", "at least 0.01", light_range)
 	var light = level.Lights.CreateLight(false)
 	# Same DD save hazard as paths (see _draw_path): Lights.Save() reads this
 	# meta unguarded, and CreateLight() never sets it -- only Load() does.
 	light.set_meta("preview", false)
 	light.position = _xy(req, Global.World.WoxelDimensions * 0.5)
 	light.color = _color(req.get("color", ""), Color(1, 0.9, 0.7))
-	light.energy = max(_num(req.get("energy", 1.0), 1.0), 0.0)
-	light.texture_scale = max(_num(req.get("range", 1.0), 1.0), 0.01)
+	light.energy = energy
+	light.texture_scale = light_range
 	light.shadow_enabled = bool(req.get("shadows", true))
 	var tex = _asset_tex("Lights", req.get("asset", ""))
 	if tex != null:
@@ -1291,7 +1297,7 @@ func _add_portal(req : Dictionary) -> Dictionary:
 	# wall may be and still capture the portal.
 	var mount = str(req.get("mount", "wall"))
 	var snap_max = _num(req.get("snap_max", 256.0), 256.0)
-	if snap_max < 0.0: snap_max = 0.0
+	if snap_max < 0.0: return _out_of_range("add_portal", "snap_max", "at least 0", snap_max)
 	# A4: an explicit `wall_id` mounts deterministically on that wall (its
 	# nearest segment to `pos`), skipping the map-wide distance search — the
 	# nearest wall can silently change as other geometry shifts, which a
@@ -1324,9 +1330,11 @@ func _add_portal(req : Dictionary) -> Dictionary:
 				"position": _vec(seg.closest), "wall_id": _id(seg.wall),
 				"snapped": _vec(seg.closest), "snap_distance": seg.distance,
 			})
-		if wall == null and mount == "wall" and not req.get("fallback_free", true):
-			return _err("no wall within snap_max (%d) of portal position" % int(snap_max))
-	# Freestanding fallback (no wall nearby, or mount == "free").
+		# Classification ruling J2: a door meant for a wall never floats free
+		# unless the caller asks for that with fallback_free.
+		if wall == null and mount == "wall" and not req.get("fallback_free", false):
+			return _err("no wall within snap_max (%d) of portal position; pass mount \"free\" for a freestanding portal" % int(snap_max))
+	# Freestanding: mount == "free", or no wall nearby and fallback_free.
 	level.CreateFreestandingPortal(
 		tex, pos, closed, radius, deg2rad(_num(req.get("rotation", 0.0), 0.0)))
 	# CreateFreestandingPortal returns void; the new portal is the last child.
@@ -1408,8 +1416,8 @@ func _place_pattern(req : Dictionary) -> Dictionary:
 	else:
 		color = DEFAULT_PATTERN_TINT
 		used_default = true
-	if color.a < 0.05:  # guard: never paint an invisible floor
-		color = Color(color.r, color.g, color.b, 1.0)
+	if color.a < 0.05:  # an invisible floor is never what was meant
+		return _out_of_range("place_pattern", "color", "an alpha of at least 0.05", "#" + color.to_html(true))
 	tool.Color = color  # always set, so we don't inherit/leave leaked state
 	var rotation = _num(req.get("rotation", 0.0), 0.0)
 	if tool.get("Rotation") != null:
@@ -1497,6 +1505,10 @@ func _build_room(req : Dictionary) -> Dictionary:
 	else:
 		return _err("provide 'rect':[x,y,w,h] or 'points':[[x,y]...]")
 
+	var floor_problem = _room_floor_problem(req)
+	if floor_problem != null:
+		return floor_problem
+
 	var result := {}
 
 	# 1) Wall loop along the boundary.
@@ -1512,35 +1524,52 @@ func _build_room(req : Dictionary) -> Dictionary:
 	result["wall_id"] = wall_res["result"].get("id")
 
 	# 2) Floor along the SAME boundary (no inset — the wall covers the seam).
+	# A room is its wall and its floor or nothing (classification ruling J3).
 	var floor_kind = str(req.get("floor", "pattern"))
 	if floor_kind == "pattern":
 		var fr := {
 			"points": pts_raw,
-			"asset": req.get("floor_asset", ""),
-			"category": req.get("floor_category", "Simple Tiles"),
+			"asset": req["floor_asset"],
+			"category": req["floor_category"],
 		}
 		if req.has("floor_color"): fr["color"] = req["floor_color"]
 		if req.has("floor_z"): fr["z"] = req["floor_z"]
 		var fres = _place_pattern(fr)
-		if fres.get("ok", false):
-			result["floor_id"] = fres["result"].get("id")
-		else:
-			result["floor_error"] = fres.get("error")
+		if not fres.get("ok", false):
+			Global.World.DeleteNodeByID(result["wall_id"])
+			return fres
+		result["floor_id"] = fres["result"].get("id")
 	elif floor_kind == "terrain":
 		var tr := {
-			"points": pts_raw, "slot": _i(req.get("floor_slot", 1), 1),
+			"points": pts_raw, "slot": _i(req.get("floor_slot", 1), 1), "asset": req["floor_asset"],
 		}
-		if req.has("floor_asset") and str(req.get("floor_asset", "")) != "":
-			tr["asset"] = req["floor_asset"]
 		var tres = _fill_region(tr)
-		if tres.get("ok", false):
-			result["floor_pixels"] = tres["result"].get("pixels")
-		else:
-			result["floor_error"] = tres.get("error")
-	# floor_kind == "none" -> walls only
+		if not tres.get("ok", false):
+			Global.World.DeleteNodeByID(result["wall_id"])
+			return tres
+		result["floor_pixels"] = tres["result"].get("pixels")
 
 	result["points"] = pts_raw
 	return _ok(result)
+
+
+# Why build_room's floor cannot be made, checked before its wall is drawn;
+# null when it can.
+func _room_floor_problem(req : Dictionary):
+	var floor_kind = str(req.get("floor", "pattern"))
+	if floor_kind == "none":
+		return null
+	if not floor_kind in ["pattern", "terrain"]:
+		return _err_code("bad_param", "build_room needs floor: \"pattern\", \"terrain\" or \"none\" (got %s)" % JSON.print(req["floor"]))
+	if not req.has("floor_asset"):
+		return _err_code("bad_param", "build_room needs floor_asset for a %s floor (or floor \"none\")" % floor_kind)
+	if floor_kind == "terrain":
+		return null
+	if not req.has("floor_category"):
+		return _err_code("bad_param", "build_room needs floor_category for a pattern floor")
+	if _asset_tex(req["floor_category"], req["floor_asset"]) == null:
+		return _err("could not load floor asset %s in %s" % [req["floor_asset"], req["floor_category"]])
+	return null
 
 
 # A Dungeondraft Text extends Godot LineEdit: the string is the inherited
@@ -1549,6 +1578,8 @@ func _build_room(req : Dictionary) -> Dictionary:
 func _add_text(req : Dictionary) -> Dictionary:
 	var level = Global.World.GetCurrentLevel()
 	if level == null: return _err("no map open")
+	var size = _i(req.get("size", 32), 32)
+	if size < 1: return _out_of_range("add_text", "size", "at least 1", size)
 	var text = level.Texts.CreateText()
 	# A Text extends LineEdit (a Control): place it via rect_position, not the
 	# Node2D `.position` (which silently does nothing on a Control).
@@ -1558,11 +1589,8 @@ func _add_text(req : Dictionary) -> Dictionary:
 	# TOOL's settings (FontSize/FontColor), overwriting anything set directly on
 	# the node. So drive it through the tool: stash the tool's values, set ours,
 	# repaint, then restore the tool so the user's UI state is unchanged.
-	# A fresh Text reports fontSize 0 until repainted, so default to 32 (DD's
-	# standard) rather than the node's pre-paint value when no size is given.
-	var size = _i(req.get("size", 32), 32)
-	if size <= 0:
-		size = 32
+	# A fresh Text reports fontSize 0 until repainted, so size defaults to 32
+	# (DD's standard) rather than the node's pre-paint value (see above).
 	var col = _color(req.get("color", ""), Color(0, 0, 0, 1))
 	var font_name = str(req.get("font", text.fontName))
 	if req.has("font"):
@@ -2466,6 +2494,11 @@ func _err(msg) -> Dictionary:
 # A coded error: callers branch on `code`, never on the message text.
 func _err_code(code : String, msg : String) -> Dictionary:
 	return { "ok": false, "error": msg, "code": code }
+
+
+# A given value outside what the command accepts (plan 4: refused, never clamped).
+func _out_of_range(cmd : String, name : String, need : String, got) -> Dictionary:
+	return _err_code("bad_param", "%s needs %s: %s (got %s)" % [cmd, name, need, str(got)])
 
 
 # The only answer that means an element is gone (see PROTOCOL.md, Errors).
