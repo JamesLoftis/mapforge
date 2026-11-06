@@ -66,6 +66,10 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ### Changed
 
+- The whole repo is MIT-licensed, under one `LICENSE` carrying Brandon
+  Florian's copyright and JamesLoftis's. The provider's MPL-2.0 `LICENSE`,
+  inherited from HashiCorp's provider template, is gone; no provider file
+  contains the template's text beyond framework boilerplate.
 - One install script, `scripts/install.ps1`, installs everything: the three Go
   binaries, the Terraform provider (`provider/scripts/install.ps1` is gone), and
   the junction that lets Dungeondraft load the mod from the checkout
