@@ -66,6 +66,10 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ### Changed
 
+- The project is MapForge, and no longer a fork of
+  `brann-dev/dungeondraft-mcp`. Go modules are `mapforge/...` (were
+  `dungeondraft-mcp/...`). The mod folder, the MCP server's names, log folders
+  and the provider address keep their names, so nothing installed changes.
 - The whole repo is MIT-licensed, under one `LICENSE` carrying Brandon
   Florian's copyright and JamesLoftis's. The provider's MPL-2.0 `LICENSE`,
   inherited from HashiCorp's provider template, is gone; no provider file

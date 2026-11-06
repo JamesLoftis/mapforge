@@ -1,4 +1,4 @@
-module dungeondraft-mcp/bridge_app
+module mapforge/bridge_app
 
 go 1.25.6
 

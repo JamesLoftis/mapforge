@@ -1,4 +1,4 @@
-# dungeondraft-mcp
+# MapForge
 
 An MCP server that drives a **running Dungeondraft instance** over a localhost
 socket. Three pieces: a Go MCP server (`mcpserver/`), a standalone Go bridge

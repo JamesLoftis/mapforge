@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	bridge "dungeondraft-mcp/bridgeclient"
+	bridge "mapforge/bridgeclient"
 )
 
 func TestScratchMapRoundTrip(t *testing.T) {

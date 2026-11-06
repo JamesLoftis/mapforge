@@ -12,7 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"dungeondraft-mcp/bridgeclient"
+	"mapforge/bridgeclient"
 )
 
 // version is stamped at build time (see scripts/install.ps1); "dev" for a

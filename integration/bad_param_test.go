@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	bridge "dungeondraft-mcp/bridgeclient"
+	bridge "mapforge/bridgeclient"
 )
 
 // Plan 4 (spec goal 3, docs/superpowers/specs/2026-11-05-mod-fallback-classification.md):

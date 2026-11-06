@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	bridge "dungeondraft-mcp/bridgeclient"
+	bridge "mapforge/bridgeclient"
 )
 
 const (

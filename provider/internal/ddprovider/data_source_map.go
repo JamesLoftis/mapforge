@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	bridge "dungeondraft-mcp/bridgeclient"
+	bridge "mapforge/bridgeclient"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"

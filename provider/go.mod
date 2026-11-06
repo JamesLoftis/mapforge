@@ -1,8 +1,8 @@
-module dungeondraft-mcp/provider
+module mapforge/provider
 
 go 1.25.6
 
-replace dungeondraft-mcp/bridgeclient => ../bridgeclient
+replace mapforge/bridgeclient => ../bridgeclient
 
 require (
 	github.com/hashicorp/hcl/v2 v2.24.0
@@ -12,7 +12,7 @@ require (
 require github.com/hashicorp/terraform-plugin-framework-validators v0.19.0
 
 require (
-	dungeondraft-mcp/bridgeclient v0.0.0-00010101000000-000000000000
+	mapforge/bridgeclient v0.0.0-00010101000000-000000000000
 	github.com/agext/levenshtein v1.2.1 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/fatih/color v1.18.0 // indirect

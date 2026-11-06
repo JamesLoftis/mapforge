@@ -3,7 +3,7 @@ package ddprovider
 import (
 	"context"
 
-	bridge "dungeondraft-mcp/bridgeclient"
+	bridge "mapforge/bridgeclient"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"

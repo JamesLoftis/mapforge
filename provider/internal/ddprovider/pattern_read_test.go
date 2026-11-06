@@ -4,12 +4,12 @@ import (
 	"context"
 	"testing"
 
-	bridge "dungeondraft-mcp/bridgeclient"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
+	bridge "mapforge/bridgeclient"
 )
 
 // A rect-declared pattern whose state has no level (pre-level state)

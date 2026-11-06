@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"dungeondraft-mcp/bridge_app/internal/logpaths"
+	"mapforge/bridge_app/internal/logpaths"
 )
 
 func main() {

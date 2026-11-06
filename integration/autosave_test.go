@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	bridge "dungeondraft-mcp/bridgeclient"
+	bridge "mapforge/bridgeclient"
 )
 
 // Terraform state is only true if the map

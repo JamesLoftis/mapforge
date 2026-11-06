@@ -1,4 +1,4 @@
-# dungeondraft-mcp
+# MapForge
 
 An MCP server that lets an LLM (Claude Code, Claude Desktop, etc.) drive a
 **running Dungeondraft instance** — place objects, draw walls, inspect the map —

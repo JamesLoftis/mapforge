@@ -104,7 +104,7 @@ mirror with `-plugin-dir`:
 
 ## Known risk: saving right after a bulk apply
 
-`dungeondraft-mcp-fork/ROADMAP.md` documents an observed bug: **Dungeondraft
+`ROADMAP.md` documents an observed bug: **Dungeondraft
 saves can fail/corrupt when attempted shortly after live bridge activity**
 (three consecutive saves failed immediately after tool-call activity in one
 session; a save after ~15-20s of bridge idle time succeeded). The bridge

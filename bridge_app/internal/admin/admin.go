@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"dungeondraft-mcp/bridge_app/internal/core"
+	"mapforge/bridge_app/internal/core"
 )
 
 // Server wraps a *core.Bridge behind an HTTP handler.

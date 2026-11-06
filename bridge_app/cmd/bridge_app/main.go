@@ -18,10 +18,10 @@ import (
 	"syscall"
 	"time"
 
-	"dungeondraft-mcp/bridge_app/internal/admin"
-	"dungeondraft-mcp/bridge_app/internal/core"
-	"dungeondraft-mcp/bridge_app/internal/ddwatch"
-	"dungeondraft-mcp/bridge_app/internal/logpaths"
+	"mapforge/bridge_app/internal/admin"
+	"mapforge/bridge_app/internal/core"
+	"mapforge/bridge_app/internal/ddwatch"
+	"mapforge/bridge_app/internal/logpaths"
 )
 
 // version is stamped at build time (see scripts/install.ps1); "dev" for a

@@ -21,7 +21,7 @@ import (
 	"os"
 	"sort"
 
-	bridge "dungeondraft-mcp/bridgeclient"
+	bridge "mapforge/bridgeclient"
 )
 
 func main() {

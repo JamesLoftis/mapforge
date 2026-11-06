@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	bridge "dungeondraft-mcp/bridgeclient"
+	bridge "mapforge/bridgeclient"
 )
 
 func fetchAgainst(t *testing.T, reply, id string) (bool, string) {

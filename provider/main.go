@@ -5,7 +5,7 @@ package main
 import (
 	"context"
 
-	"dungeondraft-mcp/provider/internal/ddprovider"
+	"mapforge/provider/internal/ddprovider"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 )
