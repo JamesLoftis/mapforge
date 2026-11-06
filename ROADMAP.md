@@ -43,9 +43,8 @@ give every placed object an absolute z (`prop.z_as_relative = false;
 prop.z_index = int(req.get("z", 200))`), comfortably above the 100 a legacy
 relative floor can reach and below roofs (800). Verified: the same
 pattern-floored spot that swallowed the previous test object now renders
-correctly. `_duplicate_object` shares the pre-fix pattern
-(`level.Objects.CreateObject(0)` + `SetTexture`, no z override) and needs the
-identical one-line fix — not yet applied, tracked here so it isn't missed.
+correctly. `_duplicate_object` shared the pre-fix pattern; closed: command removed
+(plan 4).
 
 **Second, more concrete finding this session: repeated Dungeondraft save
 failures correlate with bridge activity.** Three consecutive saves failed
@@ -111,8 +110,8 @@ documented dev loop):
    - **Missing post-`SetTexture` step**: the UI path may call something
      after `SetTexture` (e.g. a `Rect`/size recompute, an `UpdateTexture()`
      or `queue_redraw` equivalent) that `_place_object` skips.
-4. Whichever it is, apply the same fix to `_duplicate_object` (identical
-   pattern, likely identical bug, currently untested by anything).
+4. ~~Apply the same fix to `_duplicate_object`.~~ Closed: command removed
+   (plan 4).
 5. Verify with a screenshot-based check before calling it fixed, not just a
    successful `ok: true`.
 

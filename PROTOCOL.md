@@ -130,9 +130,19 @@ never on the message text. An error without a code is still an error.
 | `label_exists` | mod | `add_level` with a label another level already has |
 | `unsaved_edits` | mod | `open_map` / `new_map` while the last autosave failed; leaving would lose the edits (see Autosave) |
 | `agent_lost` | bridge_app | the agent disconnected or was superseded (Dungeondraft restarted its scene, e.g. `new_map`/`open_map`, or crashed) while running this command; it may or may not have run |
+| `bad_param` | mod | a parameter is missing, the wrong kind, or out of range; nothing ran. The message names the command, the parameter, what it needs and what it got |
 | `protocol_mismatch` | bridge_app | the connected mod speaks a different protocol version; restart Dungeondraft so it loads the current mod |
 
 ## Commands
+
+**Parameters.** A bare name is required; `name=value` is optional with that
+default; `name?` is optional with no default (what happens without it is noted).
+Every number arrives as JSON, so whole-number parameters accept `200` and `200.0`
+but not `2.5`; `x` and `y` always come together; colours are `#rrggbb`,
+`#aarrggbb` or `[r, g, b(, a)]` with components 0..1. A request that breaks any of
+this is refused with `bad_param` and nothing runs. Unknown extra parameters are
+ignored. The terrain and cave commands are not checked this way yet (gated as
+broken).
 
 Coordinates are **woxel** (world pixel) space; map center is in
 `get_status -> map_center`. Every element is referenced by integer `id`
@@ -192,15 +202,15 @@ width, type }`, `place_pattern` → `{ id, points, ... }`.
 
 | cmd | params |
 | --- | --- |
-| `place_object` | `asset`, `x?`, `y?`, `scale=1`, `rotation=0`, `sorting=0`, `color?`, `z?` |
-| `draw_wall` | `points[[x,y]...]`, `asset?`, `loop=false`, `shadow=true`, `type=0`, `joint=1`, `color?` |
-| `draw_path` | `points[[x,y]...]`, `asset`, `layer=0`, `sorting=0`, `smoothness?`, `width?` |
-| `add_light` | `x?`, `y?`, `color?`, `energy=1`, `range=1`, `shadows=true`, `asset?` |
-| `add_portal` | `asset`, `x?`, `y?`, `closed=false`, `radius=64`, `mount="wall"`, `snap_max=256`, `flip=false`, `fallback_free=true`, `rotation=0`, `wall_id?` |
+| `place_object` | `asset`, `x`, `y`, `scale=1`, `rotation=0`, `sorting=0`, `color?` (no tint), `z=200` |
+| `draw_wall` | `points[[x,y]...]`, `asset?` (the tileset's wall), `loop=false`, `shadow=true`, `type=0`, `joint=1`, `color?` (the texture's own tint) |
+| `draw_path` | `points[[x,y]...]`, `asset`, `layer=0`, `sorting=0`, `fade_in=false`, `fade_out=false`, `grow=false`, `shrink=false`, `smoothness?` (≥ 0), `width?` (> 0) |
+| `add_light` | `x`, `y`, `color="#ffe6b3"`, `energy=1` (≥ 0), `range=1` (≥ 0.01), `shadows=true`, `asset?` (Dungeondraft's default light) |
+| `add_portal` | `asset`, `x`, `y`, `closed=false`, `radius=64`, `mount="wall"` (or `"free"`), `snap_max=256` (≥ 0), `flip=false`, `fallback_free=false`, `rotation=0`, `wall_id?`. With `mount="wall"` and no wall within `snap_max` it is refused unless `fallback_free` is true |
 | `add_roof` | `points[[x,y]...]` (the RIDGE line), `asset`, `width=256`, `type=0`, `sorting=0` |
-| `add_text` | `text`, `x?`, `y?`, `size?`, `color?`, `font?` |
-| `place_pattern` | `asset`, `rect=[x,y,w,h]` **or** `points=[[x,y]...]`, `category="Patterns"`, `color?`, `rotation?` |
-| `build_room` | `rect=[x,y,w,h]` **or** `points=[[x,y]...]`, `wall_asset?`, `floor="pattern"\|"terrain"\|"none"`, `floor_asset?`, `floor_category="Simple Tiles"`, `floor_color?`, `floor_slot=1`, `wall_type=0`, `wall_joint=1` → `{ wall_id, floor_id?, points }` |
+| `add_text` | `text` (non-empty), `x`, `y`, `size=32` (≥ 1), `color="#000000"`, `font?` (Dungeondraft's current font) |
+| `place_pattern` | `asset`, `category`, `rect=[x,y,w,h]` **or** `points=[[x,y]...]`, `color?` (an opaque neutral tint, reported as `used_default_tint`; alpha ≥ 0.05), `rotation=0`, `z=-100` |
+| `build_room` | `rect=[x,y,w,h]` **or** `points=[[x,y]...]`, `wall_asset?`, `floor="pattern"` (or `"terrain"`, `"none"`), `floor_asset` (unless `floor="none"`), `floor_category` (pattern floor), `floor_color?`, `floor_z=-100`, `floor_slot=1`, `wall_type=0`, `wall_joint=1`, `wall_shadow=true` → `{ wall_id, floor_id?, points }`. All or nothing: when the floor cannot be made, no wall is left |
 
 ### Terrain
 
@@ -218,18 +228,15 @@ shape (e.g. one room's floor) rather than the whole level like `fill_terrain`.
 | `dig_cave` | `points=[[x,y]...]` **or** `x?`,`y?`, `radius=256`, `dig=true`, `ground_color?`, `wall_color?`, `texture?` |
 | `clear_caves` | — (wipes the whole cave layer back to rock) |
 
-### Modify / delete / levels / selection
+### Modify / delete / levels
 
 | cmd | params |
 | --- | --- |
 | `move_element` | `id`, `x`, `y` |
 | `modify_object` | `id`, `scale?`, `rotation?`, `color?`, `shadow?` |
-| `duplicate_object` | `id`, `dx=64`, `dy=0` → `{ id }` |
 | `delete_element` | `id` → `{ deleted }` |
 | `add_level` | `label` — required, unique among the map's levels → `{ id, label }` |
 | `set_level` | `index` |
-| `select_elements` | `ids[]` |
-| `clear_selection` | — |
 
 ### Capture
 
@@ -363,7 +370,7 @@ the rect's midpoint; `fit_elements` frames the union of all rects.
   to an effective z of **0**, while any pattern floor that predates the
   `place_pattern` absolute-z fix (or was laid in the DD UI) sits in "Layer 100"
   at effective z **100** — so objects rendered **underneath their own room's
-  floor**. `place_object`/`duplicate_object` therefore set `z_as_relative =
+  floor**. `place_object` therefore sets `z_as_relative =
   false` with an absolute `z_index` (default 200: above that 100, below roofs'
   800). Pass `z` to layer objects above/below other things.
 - **default tints** — `draw_wall` / `place_pattern` apply the texture's own

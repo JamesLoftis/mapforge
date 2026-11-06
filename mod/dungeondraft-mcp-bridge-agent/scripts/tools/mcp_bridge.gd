@@ -42,7 +42,7 @@ const SAVE_HOLD_LIMIT_MSEC := 20000
 # map-bound client schedules an autosave.
 const EDIT_CMDS := [
 	"place_object", "draw_wall", "draw_path", "add_light", "add_portal",
-	"add_roof", "add_text", "place_pattern", "build_room", "duplicate_object",
+	"add_roof", "add_text", "place_pattern", "build_room",
 	"move_element", "modify_object", "delete_element", "set_terrain_slot",
 	"fill_terrain", "fill_region", "paint_terrain", "paint_path", "dig_cave",
 	"clear_caves", "add_level",
@@ -576,7 +576,6 @@ func _dispatch(req : Dictionary) -> Dictionary:
 		# --- modify / delete ---
 		"move_element": return _move_element(req)
 		"modify_object": return _modify_object(req)
-		"duplicate_object": return _duplicate_object(req)
 		"delete_element": return _delete_element(req)
 		# --- levels ---
 		"add_level": return _add_level(req)
@@ -589,9 +588,6 @@ func _dispatch(req : Dictionary) -> Dictionary:
 		"set_camera": return _set_camera(req)
 		"focus_element": return _focus_element(req)
 		"fit_elements": return _fit_elements(req)
-		# --- selection ---
-		"select_elements": return _select_elements(req)
-		"clear_selection": return _clear_selection()
 		_: return _err("unknown cmd: " + str(cmd))
 
 
@@ -1998,30 +1994,6 @@ func _modify_object(req : Dictionary) -> Dictionary:
 	return _ok(_describe(node))
 
 
-func _duplicate_object(req : Dictionary) -> Dictionary:
-	var level = Global.World.GetCurrentLevel()
-	if level == null: return _err("no map open")
-	var src = _resolve(req)
-	if src == null: return _not_found(req)
-	if src.get("Texture") == null: return _err("element has no Texture to duplicate")
-	var prop = level.Objects.CreateObject(0)
-	_mark_placed(prop)
-	prop.SetTexture(src.Texture)
-	prop.position = src.position + Vector2(_num(req.get("dx", 64.0), 64.0), _num(req.get("dy", 0.0), 0.0))
-	prop.scale = src.scale
-	prop.rotation = src.rotation
-	# Absolute z like _place_object so the copy isn't swallowed by a legacy
-	# relative-z floor. Mirror the source's own override if it has one (it was
-	# placed post-fix); otherwise fall back to the same default.
-	if src.get("z_as_relative") == false and src.get("z_index") != null:
-		prop.z_as_relative = false
-		prop.z_index = int(src.get("z_index"))
-	else:
-		prop.z_as_relative = false
-		prop.z_index = _i(req.get("z", 200), 200)
-	return _ok({ "id": _id(prop), "position": _vec(prop.position) })
-
-
 func _delete_element(req : Dictionary) -> Dictionary:
 	var ident = req.get("id")
 	if ident == null: return _err("missing 'id'")
@@ -2238,31 +2210,6 @@ func _element_rect(node):
 	if node is Node2D:
 		return Rect2(node.position, Vector2())
 	return null
-
-
-# ---------------------------------------------------------------------------
-# Selection
-# ---------------------------------------------------------------------------
-
-func _select_elements(req : Dictionary) -> Dictionary:
-	var ids = req.get("ids", [])
-	if typeof(ids) != TYPE_ARRAY:
-		return _err("'ids' must be an array")
-	var stool = Global.Editor.Tools["SelectTool"]
-	stool.DeselectAll()
-	var n := 0
-	for ident in ids:
-		var node = Global.World.GetNodeByID(_i(ident, -1))
-		if node != null:
-			stool.SelectThing(node, true)
-			n += 1
-	stool.EnableTransformBox(true)
-	return _ok({ "selected": n })
-
-
-func _clear_selection() -> Dictionary:
-	Global.Editor.Tools["SelectTool"].DeselectAll()
-	return _ok({ "cleared": true })
 
 
 # ---------------------------------------------------------------------------
