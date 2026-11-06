@@ -51,6 +51,10 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ### Removed
 
+- The provider's `crudge`, `ddcheck` and `tfcheck` dev tools: the integration
+  suite covers what they checked, with a real `terraform validate` and live
+  Dungeondraft.
+
 - The `duplicate_object`, `select_elements` and `clear_selection` commands. No
   client sends them now that the MCP server is look-only.
 

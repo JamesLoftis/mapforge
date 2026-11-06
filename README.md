@@ -60,6 +60,7 @@ protocol is in [PROTOCOL.md](PROTOCOL.md).
 - Windows (the install script, `dd-launch` and the Dungeondraft watcher are
   Windows-only).
 - Dungeondraft **1.2.0.1** (Godot 3.4.2).
+- Git (the install script stamps versions with `git describe`).
 - Go **1.25.6** or later.
 - Terraform (tested with **1.16.0**).
 - For the MCP side, an MCP client such as Claude Code.
@@ -69,8 +70,11 @@ protocol is in [PROTOCOL.md](PROTOCOL.md).
 ```powershell
 git clone https://github.com/JamesLoftis/mapforge.git
 cd mapforge
-.\scripts\install.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
+
+(`-ExecutionPolicy Bypass` is only needed where Windows blocks local scripts,
+which is its default.)
 
 The script is the deploy step; re-run it after every `git pull` or local edit.
 It:
@@ -84,7 +88,9 @@ It:
 - links Dungeondraft's mods folder to the mod in your checkout
   (`%APPDATA%\Dungeondraft\Mods\dungeondraft-mcp-bridge-agent`, a junction).
   If your mods folder is elsewhere, pass it:
-  `.\scripts\install.ps1 -ModsDir D:\Dungeondraft\Mods`.
+  `.\scripts\install.ps1 -ModsDir D:\Dungeondraft\Mods`. If you copied the mod
+  into the mods folder by hand before, the script stops rather than delete
+  your copy: move it aside and re-run.
 
 Close Claude Code first if it is running `mcpserver.exe`: Windows will not
 overwrite a running program.
@@ -94,8 +100,10 @@ Then:
 1. Start Dungeondraft through
    `%LOCALAPPDATA%\DungeondraftBridge\bin\dd-launch.exe` (point your shortcut at
    it). It starts Dungeondraft and `bridge_app` together and writes their logs.
+   It looks for `C:\Program Files\Dungeondraft\Dungeondraft.exe`; if yours is
+   elsewhere, pass `-dd-path <path>` or set `DD_EXE_PATH`.
 2. In Dungeondraft, enable the **TF Bridge Agent** mod.
-3. Check the chain: `curl http://127.0.0.1:8788/health` shows
+3. Check the chain: `curl.exe http://127.0.0.1:8788/health` shows
    `"dd_connected": true`.
 
 ## Your first map
