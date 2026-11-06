@@ -1,70 +1,55 @@
 # MapForge
 
-An MCP server that drives a **running Dungeondraft instance** over a localhost
-socket. Three pieces: a Go MCP server (`mcpserver/`), a standalone Go bridge
-daemon (`bridge_app/`) that owns the actual TCP port, a shared Go wire client
-(`bridgeclient/`) it uses, and a GDScript mod (`mod/`) that runs inside
-Dungeondraft as an outbound agent. See [README.md](README.md) for the
-architecture and [PROTOCOL.md](PROTOCOL.md) for every command + implementation
-notes.
+Builds Dungeondraft maps with Terraform. The pieces, all in this repo:
 
-A Terraform provider (`terraform-provider-dungeondraft`) talks to the same
-`bridge_app` but lives in its own sibling repo, not here — it vendors its own
-copy of the wire client rather than depending on this repo's `bridgeclient/`.
-If you change the wire protocol (a new command, a changed param/result shape),
-update `PROTOCOL.md` here — it's the contract both repos build against — and
-flag to the user that the sibling repo's `internal/ddprovider/` may need a
-matching change; this repo's tools can't see or edit that repo.
+- `provider/`: the Terraform provider, the **only** way maps get built or changed.
+- `mcpserver/`: a **look-only** MCP server (status, elements, screenshots,
+  camera). It cannot create, change or delete anything.
+- `bridge_app/`: the always-up relay on `127.0.0.1:8787` (admin page on `:8788`)
+  that logs every command; `dd-launch` starts it with Dungeondraft.
+- `bridgeclient/`: the shared Go wire client the provider and `mcpserver` use.
+- `mod/`: the **TF Bridge Agent** mod, one GDScript file running inside
+  Dungeondraft, which dials out to `bridge_app`.
 
-## Before you call any tool
+See [README.md](README.md) for the architecture and use, and
+[PROTOCOL.md](PROTOCOL.md) for every command, error code and the protocol
+version. A wire change (a new command, a changed parameter or result) touches
+the mod, `PROTOCOL.md`, and usually the provider (`provider/internal/ddprovider/`);
+a protocol version bump changes `PROTOCOL_VERSION` in both `mcp_bridge.gd` and
+`bridge_app/internal/core/bridge.go`.
 
-The tools talk to a live Dungeondraft, not this repo. They only work when:
+## Before you call any MCP tool
 
-1. **Dungeondraft is running** with the **MCP Bridge mod enabled**, and
-2. **a map is open**.
-
-If both aren't true, calls fail (connection refused, or `"no map open"`).
-**Verify first:** call `ping` (expect `pong` + a protocol version), then
-`get_status` (expect `map_open: true` and a `map_center`). If `ping` fails, the
-mod isn't loaded or DD isn't running — ask the user to start it; don't retry
-blindly.
+The tools talk to a live Dungeondraft, not this repo. They only work when
+Dungeondraft is running with the **TF Bridge Agent** mod enabled and a map is
+open. **Verify first:** `ping` (expect `pong` and `dd_connected: true`), then
+`get_status` (expect `map_open: true`). If `ping` shows `dd_connected: false`,
+ask the user to start Dungeondraft; don't retry blindly.
 
 ## Working with the map
 
-- Coordinates are **woxel** (world-pixel) space; get `map_center` from
-  `get_status`. There are 256 woxels per tile.
-- Every element has an integer `id`; create calls return it, `list_elements` /
-  `get_element` report it. Feed ids back into move/modify/delete.
-- Discover assets with `list_assets` (it takes a `category` and a substring
-  `search`); list categories with `list_asset_categories`.
-- **Look at your work**: `screenshot` (current view) and the camera tools
-  (`set_camera`, `focus_element`, `fit_elements`) return/aim the view so you can
-  inspect what you built and iterate. Use them.
-- The bridge keeps its **own** `undo` / `redo` stacks (independent of DD's
-  Ctrl+Z). `delete_element` is **not** undoable.
+- Build and change maps by writing Terraform, never through MCP.
+- Coordinates are **woxel** (world-pixel) space, 256 per tile; `get_status`
+  gives `map_center`.
+- Every element has an integer `id`; `list_elements` / `get_element` report it.
+- Find assets with `list_assets` (`category` plus a substring `search`) and
+  `list_asset_categories`, or `go run ./cmd/catalog` in `provider/`.
+- **Look at your work**: `screenshot` and `export_map`, aimed with `set_camera`,
+  `focus_element` and `fit_elements`.
 
-## Editing the bridge itself
+## Editing MapForge itself
 
-If you change code (not just drive the map), the pieces reload differently:
-
-- **Mod** (`mod/.../mcp_bridge.gd`, GDScript): reload the mod inside Dungeondraft
-  (keeps the current map). Changing an existing handler needs only this.
-- **MCP server** (`mcpserver/cmd/mcpserver/`): rebuild (`.\scripts\install.ps1`),
-  then an **MCP reconnect** (`/mcp` → reconnect). Adding a *new tool* needs
-  **both** reloads (mod handler + `mcpserver` registration in `register.go`).
-- **Bridge app** (`bridge_app/`): rebuild (`.\scripts\install.ps1`) and restart
-  it — or just close/reopen Dungeondraft via the installed `dd-launch.exe`,
-  since `bridge_app` now watches DD's process and exits on its own a while
-  after DD closes.
-- GDScript on Godot 3.4.2 has **no try/catch**: an unhandled runtime error in a
-  handler crashes *that call*, but a **parse error anywhere in `mcp_bridge.gd`
-  is worse** — Dungeondraft's mod loader has no per-mod isolation, so one bad
-  line (e.g. a mis-indented statement) throws during `ModManager.Load()` and
-  silently aborts loading **every** mod, not just this one. Symptoms: the mod
-  never appears in DD's tool panel, no `agent_hello` ever reaches `bridge_app`
-  (`ping` stays `dd_connected: false` forever), and DD's own log/UI shows
-  nothing wrong. The only way to see the actual `SCRIPT ERROR:` is to relaunch
-  Dungeondraft from a terminal so stdout/stderr aren't swallowed
-  (`& "C:\Program Files\Dungeondraft\Dungeondraft.exe"`). Validate inputs
-  before calling DD API methods, and if the mod ever stops connecting with no
-  obvious cause, check for exactly this before anything else.
+- Re-run `scripts\install.ps1` after changing Go code (it builds the binaries,
+  the provider and the mod link); `/mcp` reconnect for `mcpserver`; restart
+  Dungeondraft for the mod and `bridge_app`.
+- Unit tests: `go test ./...` per module; script tests:
+  `Invoke-Pester scripts/tests` (Windows PowerShell 5.1). Live tests:
+  `go test -tags integration ./...` in `integration/`, with a **scratch map**
+  open, never a real one.
+- The mod must stay **one `.gd` file**: a second script anywhere in its folder
+  crashes Dungeondraft's mod loader.
+- GDScript on Godot 3.4.2 has **no try/catch**, and a **parse error anywhere in
+  `mcp_bridge.gd`** silently stops Dungeondraft loading **every** mod: the mod
+  never connects and the UI shows nothing wrong. The `SCRIPT ERROR:` is in
+  `%APPDATA%\DungeondraftBridge\logs\dd_<stamp>.log` (written by `dd-launch`).
+  If the mod ever stops connecting with no obvious cause, check for this first.
