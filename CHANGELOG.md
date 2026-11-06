@@ -37,6 +37,11 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ### Fixed
 
+- The provider no longer sends values a config leaves out. An optional,
+  computed attribute left unset was sent as its zero value, so a wall without
+  `joint` got sharp corners instead of the default bevel and a text without
+  `size` got size 0.
+
 - Edits made through the bridge now mark the map modified, so Dungeondraft
   warns before closing and backs it up; `get_status.modified` reflects them.
   Setting the static `Master.IsModified` from GDScript never took effect.
@@ -45,6 +50,9 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
   shut it down.
 
 ### Removed
+
+- The `duplicate_object`, `select_elements` and `clear_selection` commands. No
+  client sends them now that the MCP server is look-only.
 
 - Every MCP tool that creates, changes, deletes, paints terrain, digs caves,
   selects or undoes (spec goal 2). The MCP server keeps 15 look-only tools:
@@ -57,6 +65,24 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
   wanted for. Protocol v20: restart Dungeondraft so it loads the new mod.
 
 ### Changed
+
+- **Protocol 21: required means required.** The mod checks every request's
+  parameters before it runs and refuses a missing required value, a value of
+  the wrong kind (`"abc"` for a number, `"false"` for a bool, a bad colour or
+  point), `x` without `y`, or a value out of range, with the new error code
+  `bad_param`; nothing is created. These used to be replaced silently: a
+  missing position put the element at the map's centre, a negative light
+  energy became 0, a text size of 0 became 32, a bad point was dropped from a
+  wall. Required now: `x`/`y` on objects, lights, doors and text, `category` on
+  patterns, `floor_asset` (and `floor_category` for a pattern floor) on rooms.
+- A door with no wall within `snap_max` is refused instead of quietly becoming
+  freestanding; `mount = "free"` asks for a freestanding one, and
+  `fallback_free` (now default false) restores the old fallback.
+- `build_room` creates its wall and its floor or nothing: a floor that cannot be
+  made no longer leaves a wall behind with only a warning (`floor_error` is gone).
+- The provider requires and validates the same values at plan time, and each
+  optional attribute's description gives its default. A door's `x`/`y` must lie
+  on its wall line.
 
 - Levels are identified by label. Any command may carry `level` (a label);
   the mod applies it for that command and restores the active level.
