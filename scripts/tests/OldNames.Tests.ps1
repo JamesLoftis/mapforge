@@ -9,7 +9,8 @@ $allowedPaths = @(
 )
 $allowedText = @(
     'dungeondraft-mcp-bridge-agent',  # the mod folder Dungeondraft knows the mod by
-    'brann-dev/dungeondraft-mcp',     # the credit to Brandon Florian's project
+    'brann-dev/dungeondraft-mcp',     # the credit to Brandon Florian's project:
+    '[dungeondraft-mcp](',            # its link and the link's text
     'Name: "dungeondraft-mcp"'        # mcpserver's MCP serverInfo name
 )
 
