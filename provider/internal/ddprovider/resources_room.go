@@ -180,24 +180,18 @@ func (r *roomResource) Create(ctx context.Context, req resource.CreateRequest, r
 	}
 	m.ID = types.StringValue(idAsString(wallID))
 
-	// The floor step can fail without failing the overall command (the mod
-	// embeds floor_error in an ok:true response rather than rejecting the
-	// whole call) — surface that as a warning so a silently-missing floor
-	// isn't mistaken for one that was actually placed.
+	// build_room makes its wall and its floor or nothing, so a pattern floor
+	// that answered ok has an id.
 	m.FloorID = types.StringNull()
-	if floorKind == "pattern" {
-		if fid, ok := result["floor_id"]; ok && fid != nil {
-			m.FloorID = types.StringValue(idAsString(fid))
-		} else if ferr, ok := result["floor_error"]; ok && ferr != nil {
-			resp.Diagnostics.AddWarning("Room floor was not placed", "build_room's wall succeeded but the floor step failed: "+idAsString(ferr))
-		}
+	if fid, ok := result["floor_id"]; ok && fid != nil && floorKind == "pattern" {
+		m.FloorID = types.StringValue(idAsString(fid))
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 
-// idAsString coerces a JSON value that may be a number (an id) or a string
-// (build_room's floor_error is a message, not an id) to its string form.
+// idAsString gives an element id from a JSON reply (a number, or a string
+// when already formatted) in Terraform's string form.
 func idAsString(v any) string {
 	if s, ok := v.(string); ok {
 		return s

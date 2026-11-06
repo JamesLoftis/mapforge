@@ -6,6 +6,7 @@ import (
 	bridge "dungeondraft-mcp/bridgeclient"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -117,14 +118,14 @@ func (r *wallResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			// modify_object, so an explicit change can only be a replace.
 			"asset": schema.StringAttribute{Optional: true, Computed: true,
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
-			"loop": schema.BoolAttribute{Optional: true, Computed: true, Description: "Close into a loop (a room).",
+			"loop": schema.BoolAttribute{Optional: true, Computed: true, Description: "Close into a loop (a room). Default false.",
 				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown(), boolplanmodifier.RequiresReplace()}},
-			"type": schema.Int64Attribute{Optional: true, Computed: true, Description: "0=auto, 1=manual, 2=cave.",
+			"type": schema.Int64Attribute{Optional: true, Computed: true, Description: "0=auto, 1=manual, 2=cave. Default 0.",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
-			"joint": schema.Int64Attribute{Optional: true, Computed: true, Description: "0=sharp, 1=bevel, 2=round.",
+			"joint": schema.Int64Attribute{Optional: true, Computed: true, Description: "0=sharp, 1=bevel, 2=round. Default 1.",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
 			"color":  schema.StringAttribute{Optional: true, Description: "#rrggbb; omit for the texture's own tint.", Validators: hexColorValidators, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
-			"shadow": schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
+			"shadow": schema.BoolAttribute{Optional: true, Description: "Default true.", PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
 			"level":  levelAttribute(),
 		},
 	}
@@ -271,14 +272,14 @@ func (r *portalResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
 			"wall_id": schema.Int64Attribute{Optional: true, Computed: true, Description: "Mount on this specific wall (skips nearest-wall search). Links to a dungeondraft_wall.",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
-			"radius": schema.Float64Attribute{Optional: true, Computed: true, Description: "Door half-width (~128 = 1-tile door).",
+			"radius": schema.Float64Attribute{Optional: true, Computed: true, Description: "Door half-width (~128 = 1-tile door). Default 64.",
 				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
-			"closed": schema.BoolAttribute{Optional: true, Computed: true,
+			"closed": schema.BoolAttribute{Optional: true, Computed: true, Description: "Default false.",
 				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown(), boolplanmodifier.RequiresReplace()}},
-			"flip":          schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
-			"mount":         schema.StringAttribute{Optional: true, Description: "wall or free.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"flip":          schema.BoolAttribute{Optional: true, Description: "Default false.", PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
+			"mount":         schema.StringAttribute{Optional: true, Description: "\"wall\" (default) or \"free\".", Validators: []validator.String{stringvalidator.OneOf("wall", "free")}, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			"snap_max":      schema.Float64Attribute{Optional: true, Description: "Max woxel distance a wall may be and still capture the portal. Default 256; at least 0.", Validators: []validator.Float64{float64validator.AtLeast(0)}, PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
-			"rotation":      schema.Float64Attribute{Optional: true, Description: "Degrees; freestanding only.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"rotation":      schema.Float64Attribute{Optional: true, Description: "Degrees; freestanding only. Default 0.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
 			"fallback_free": schema.BoolAttribute{Optional: true, Description: "With mount \"wall\" and no wall within snap_max, make a freestanding portal instead of failing. Default false.", PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
 			"level":         levelAttribute(),
 		},
@@ -431,14 +432,14 @@ func (r *objectResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			// modify_object for these.
 			"x":        schema.Float64Attribute{Required: true},
 			"y":        schema.Float64Attribute{Required: true},
-			"rotation": schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
-			"scale":    schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
+			"rotation": schema.Float64Attribute{Optional: true, Computed: true, Description: "Degrees. Default 0.", PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
+			"scale":    schema.Float64Attribute{Optional: true, Computed: true, Description: "Default 1.", PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
 			// color isn't in get_element's object descriptor at all, so it can't
 			// be Computed/drift-checked — but modify_object does accept it, so
 			// Update still applies an explicit change in place (write-only,
 			// like sorting/z, just not replace-on-change like them).
 			"color":   schema.StringAttribute{Optional: true, Description: "#rrggbb tint; omit for none.", Validators: hexColorValidators},
-			"sorting": schema.Int64Attribute{Optional: true, Description: "0=over, 1=under.", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"sorting": schema.Int64Attribute{Optional: true, Description: "0=over, 1=under. Default 0.", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
 			"z":       schema.Int64Attribute{Optional: true, Description: "Absolute z_index (default 200; above legacy floors, below roofs).", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
 			"level":   levelAttribute(),
 		},
@@ -651,7 +652,7 @@ func (r *lightResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			"color":   schema.StringAttribute{Optional: true, Description: "#rrggbb; default #ffe6b3 (warm white).", Validators: hexColorValidators, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			"energy":  schema.Float64Attribute{Optional: true, Description: "Default 1; at least 0.", Validators: []validator.Float64{float64validator.AtLeast(0)}, PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
 			"range":   schema.Float64Attribute{Optional: true, Description: "Radius scale. Default 1; at least 0.01.", Validators: []validator.Float64{float64validator.AtLeast(0.01)}, PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
-			"shadows": schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
+			"shadows": schema.BoolAttribute{Optional: true, Description: "Default true.", PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
 			"asset": schema.StringAttribute{Optional: true, Computed: true, Description: "Lights gradient/cookie texture.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
 			"level": levelAttribute(),

@@ -156,3 +156,29 @@ func TestBuildRoomWithBadFloorCreatesNothing(t *testing.T) {
 	delete(room, "floor_asset")
 	assertRefused(t, "build_room", room, "floor_asset")
 }
+
+// Final review: a misspelt mount would slip past J2, and an optional asset
+// that is given but cannot be loaded silently became the default.
+func TestModRefusesBadMountAndUnloadableAssets(t *testing.T) {
+	scratchMap(t)
+	c := ctx(t)
+	assertRefused(t, "add_portal", map[string]any{"asset": firstAsset(c, t, "Portals"), "x": 5000, "y": 5000,
+		"mount": "Wall"}, "mount")
+	for _, tc := range []paramCase{
+		{"wall", "draw_wall", map[string]any{"asset": "no/such/wall.png", "points": [][]float64{{0, 0}, {500, 0}}},
+			"no/such/wall.png"},
+		{"light", "add_light", map[string]any{"asset": "no/such/light.png", "x": 100, "y": 100}, "no/such/light.png"},
+		{"room wall", "build_room", map[string]any{"rect": []float64{0, 0, 512, 512}, "floor": "none",
+			"wall_asset": "no/such/wall.png"}, "no/such/wall.png"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := elementCount(t)
+			if _, err := dd.Request(ctx(t), tc.cmd, tc.params); err == nil || !strings.Contains(err.Error(), tc.wantInError) {
+				t.Errorf("%s with an unloadable asset: got %v; want an error naming it", tc.cmd, err)
+			}
+			if after := elementCount(t); after != before {
+				t.Errorf("%s with an unloadable asset created %d elements", tc.cmd, after-before)
+			}
+		})
+	}
+}

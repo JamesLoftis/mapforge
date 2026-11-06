@@ -1143,6 +1143,9 @@ func _draw_wall(req : Dictionary) -> Dictionary:
 	var pts = _points(req.get("points", []))
 	if pts.size() < 2: return _err("'points' needs >= 2 [x,y] pairs")
 	var tex = _asset_tex("Walls", req.get("asset", ""))
+	# Omitted means the tileset's wall; a given asset that cannot load is an
+	# error (AddWall with it never answers).
+	if req.has("asset") and tex == null: return _err("could not load wall asset: " + str(req["asset"]))
 	var wall_type = _i(req.get("type", 0), 0)
 	if wall_type < 0 or wall_type > 2:
 		return _err("'type' must be 0 (auto), 1 (manual) or 2 (cave)")
@@ -1214,6 +1217,8 @@ func _add_light(req : Dictionary) -> Dictionary:
 	if energy < 0.0: return _out_of_range("add_light", "energy", "at least 0", energy)
 	var light_range = _num(req.get("range", 1.0), 1.0)
 	if light_range < 0.01: return _out_of_range("add_light", "range", "at least 0.01", light_range)
+	var tex = _asset_tex("Lights", req.get("asset", ""))
+	if req.has("asset") and tex == null: return _err("could not load light asset: " + str(req["asset"]))
 	var light = level.Lights.CreateLight(false)
 	# Same DD save hazard as paths (see _draw_path): Lights.Save() reads this
 	# meta unguarded, and CreateLight() never sets it -- only Load() does.
@@ -1223,7 +1228,6 @@ func _add_light(req : Dictionary) -> Dictionary:
 	light.energy = energy
 	light.texture_scale = light_range
 	light.shadow_enabled = bool(req.get("shadows", true))
-	var tex = _asset_tex("Lights", req.get("asset", ""))
 	if tex != null:
 		light.texture = tex
 	return _ok({ "id": _id(light), "position": _vec(light.position) })
@@ -1292,6 +1296,7 @@ func _add_portal(req : Dictionary) -> Dictionary:
 	# "free" forces a freestanding portal. snap_max caps how far (woxels) a
 	# wall may be and still capture the portal.
 	var mount = str(req.get("mount", "wall"))
+	if not mount in ["wall", "free"]: return _out_of_range("add_portal", "mount", "\"wall\" or \"free\"", mount)
 	var snap_max = _num(req.get("snap_max", 256.0), 256.0)
 	if snap_max < 0.0: return _out_of_range("add_portal", "snap_max", "at least 0", snap_max)
 	# A4: an explicit `wall_id` mounts deterministically on that wall (its
@@ -1510,10 +1515,10 @@ func _build_room(req : Dictionary) -> Dictionary:
 	# 1) Wall loop along the boundary.
 	var wall_req := {
 		"points": pts_raw, "loop": true,
-		"asset": req.get("wall_asset", ""),
 		"type": req.get("wall_type", 0), "joint": req.get("wall_joint", 1),
 		"shadow": req.get("wall_shadow", true),
 	}
+	if req.has("wall_asset"): wall_req["asset"] = req["wall_asset"]
 	var wall_res = _draw_wall(wall_req)
 	if not wall_res.get("ok", false):
 		return wall_res

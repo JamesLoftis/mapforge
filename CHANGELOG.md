@@ -75,6 +75,10 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
   energy became 0, a text size of 0 became 32, a bad point was dropped from a
   wall. Required now: `x`/`y` on objects, lights, doors and text, `category` on
   patterns, `floor_asset` (and `floor_category` for a pattern floor) on rooms.
+- An optional asset that is given but cannot be loaded (a wall's, a room's
+  `wall_asset`, a light's) fails instead of falling back: a bad wall asset used
+  to leave Dungeondraft not answering until the 30 s timeout. A misspelt
+  portal `mount` is refused.
 - A door with no wall within `snap_max` is refused instead of quietly becoming
   freestanding; `mount = "free"` asks for a freestanding one, and
   `fallback_free` (now default false) restores the old fallback.

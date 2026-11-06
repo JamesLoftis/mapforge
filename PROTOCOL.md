@@ -140,8 +140,9 @@ default; `name?` is optional with no default (what happens without it is noted).
 Every number arrives as JSON, so whole-number parameters accept `200` and `200.0`
 but not `2.5`; `x` and `y` always come together; colours are `#rrggbb`,
 `#aarrggbb` or `[r, g, b(, a)]` with components 0..1. A request that breaks any of
-this is refused with `bad_param` and nothing runs. Unknown extra parameters are
-ignored. The terrain and cave commands are not checked this way yet (gated as
+this is refused with `bad_param` and nothing runs. An optional `asset` that is
+given must load, or the command fails and creates nothing. Unknown extra
+parameters are ignored. The terrain and cave commands are not checked this way yet (gated as
 broken).
 
 Coordinates are **woxel** (world pixel) space; map center is in

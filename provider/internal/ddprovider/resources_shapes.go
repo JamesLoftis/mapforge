@@ -48,11 +48,11 @@ func (r *roofResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			// Read syncs width/type from the live roof, so they must be
 			// Optional+Computed — a value DD applied by default is not drift.
 			// RequiresReplace still applies on an explicit change.
-			"width": schema.Float64Attribute{Optional: true, Computed: true,
+			"width": schema.Float64Attribute{Optional: true, Computed: true, Description: "Eave distance from the ridge in woxels. Default 256.",
 				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
-			"type": schema.Int64Attribute{Optional: true, Computed: true,
+			"type": schema.Int64Attribute{Optional: true, Computed: true, Description: "0=gable, 1=hip, 2=dormer. Default 0.",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
-			"sorting": schema.Int64Attribute{Optional: true, Description: "0=over, 1=under.", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"sorting": schema.Int64Attribute{Optional: true, Description: "0=over, 1=under. Default 0.", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
 			"level":   levelAttribute(),
 		},
 	}
@@ -327,7 +327,7 @@ func (r *patternResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()}},
 			"color": schema.StringAttribute{Optional: true, Description: "#rrggbb tint; omit for an opaque neutral tint.", Validators: hexColorValidators,
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
-			"rotation": schema.Float64Attribute{Optional: true, Description: "Pattern rotation in degrees.",
+			"rotation": schema.Float64Attribute{Optional: true, Description: "Pattern rotation in degrees. Default 0.",
 				PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
 			"z": schema.Int64Attribute{Optional: true, Description: "Absolute z_index (default -100).",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
@@ -470,9 +470,9 @@ func (r *pathResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()}},
 			"smoothness": schema.Float64Attribute{Optional: true, Computed: true, Description: "Curve smoothing; at least 0. Omit for Dungeondraft's own.", Validators: []validator.Float64{float64validator.AtLeast(0)},
 				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
-			"width":   schema.Float64Attribute{Optional: true, Description: "Width scale multiplier.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
-			"layer":   schema.Int64Attribute{Optional: true, PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
-			"sorting": schema.Int64Attribute{Optional: true, PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"width":   schema.Float64Attribute{Optional: true, Description: "Width scale multiplier; more than 0. Omit for Dungeondraft's own.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"layer":   schema.Int64Attribute{Optional: true, Description: "Default 0.", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"sorting": schema.Int64Attribute{Optional: true, Description: "Default 0.", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
 			"level":   levelAttribute(),
 		},
 	}
