@@ -148,19 +148,19 @@ func (r *wallResource) Create(ctx context.Context, req resource.CreateRequest, r
 	if !m.Asset.IsNull() && m.Asset.ValueString() != "" {
 		params["asset"] = m.Asset.ValueString()
 	}
-	if !m.Loop.IsNull() {
+	if isConfigured(m.Loop) {
 		params["loop"] = m.Loop.ValueBool()
 	}
-	if !m.Type.IsNull() {
+	if isConfigured(m.Type) {
 		params["type"] = m.Type.ValueInt64()
 	}
-	if !m.Joint.IsNull() {
+	if isConfigured(m.Joint) {
 		params["joint"] = m.Joint.ValueInt64()
 	}
 	if !m.Color.IsNull() && m.Color.ValueString() != "" {
 		params["color"] = m.Color.ValueString()
 	}
-	if !m.Shadow.IsNull() {
+	if isConfigured(m.Shadow) {
 		params["shadow"] = m.Shadow.ValueBool()
 	}
 	id, diags := createNode(ctx, c, "draw_wall", params, m.Level.ValueString())
@@ -298,34 +298,34 @@ func (r *portalResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 	params := map[string]any{"asset": m.Asset.ValueString()}
-	if !m.X.IsNull() {
+	if isConfigured(m.X) {
 		params["x"] = m.X.ValueFloat64()
 	}
-	if !m.Y.IsNull() {
+	if isConfigured(m.Y) {
 		params["y"] = m.Y.ValueFloat64()
 	}
-	if !m.WallID.IsNull() {
+	if isConfigured(m.WallID) {
 		params["wall_id"] = m.WallID.ValueInt64()
 	}
-	if !m.Radius.IsNull() {
+	if isConfigured(m.Radius) {
 		params["radius"] = m.Radius.ValueFloat64()
 	}
-	if !m.Closed.IsNull() {
+	if isConfigured(m.Closed) {
 		params["closed"] = m.Closed.ValueBool()
 	}
-	if !m.Flip.IsNull() {
+	if isConfigured(m.Flip) {
 		params["flip"] = m.Flip.ValueBool()
 	}
 	if !m.Mount.IsNull() && m.Mount.ValueString() != "" {
 		params["mount"] = m.Mount.ValueString()
 	}
-	if !m.SnapMax.IsNull() {
+	if isConfigured(m.SnapMax) {
 		params["snap_max"] = m.SnapMax.ValueFloat64()
 	}
-	if !m.Rotation.IsNull() {
+	if isConfigured(m.Rotation) {
 		params["rotation"] = m.Rotation.ValueFloat64()
 	}
-	if !m.FallbackFree.IsNull() {
+	if isConfigured(m.FallbackFree) {
 		params["fallback_free"] = m.FallbackFree.ValueBool()
 	}
 	id, diags := createNode(ctx, c, "add_portal", params, m.Level.ValueString())
@@ -458,25 +458,25 @@ func (r *objectResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 	params := map[string]any{"asset": m.Asset.ValueString()}
-	if !m.X.IsNull() {
+	if isConfigured(m.X) {
 		params["x"] = m.X.ValueFloat64()
 	}
-	if !m.Y.IsNull() {
+	if isConfigured(m.Y) {
 		params["y"] = m.Y.ValueFloat64()
 	}
-	if !m.Rotation.IsNull() {
+	if isConfigured(m.Rotation) {
 		params["rotation"] = m.Rotation.ValueFloat64()
 	}
-	if !m.Scale.IsNull() {
+	if isConfigured(m.Scale) {
 		params["scale"] = m.Scale.ValueFloat64()
 	}
-	if !m.Sorting.IsNull() {
+	if isConfigured(m.Sorting) {
 		params["sorting"] = m.Sorting.ValueInt64()
 	}
 	if !m.Color.IsNull() && m.Color.ValueString() != "" {
 		params["color"] = m.Color.ValueString()
 	}
-	if !m.Z.IsNull() {
+	if isConfigured(m.Z) {
 		params["z"] = m.Z.ValueInt64()
 	}
 	id, diags := createNode(ctx, c, "place_object", params, m.Level.ValueString())
@@ -670,10 +670,10 @@ func (r *lightResource) Create(ctx context.Context, req resource.CreateRequest, 
 	// x and y default to map center when omitted; take them as required to be
 	// declarative (a light placement is part of the plan).
 	params := map[string]any{}
-	if !m.X.IsNull() {
+	if isConfigured(m.X) {
 		params["x"] = m.X.ValueFloat64()
 	}
-	if !m.Y.IsNull() {
+	if isConfigured(m.Y) {
 		params["y"] = m.Y.ValueFloat64()
 	}
 	if m.X.IsNull() || m.Y.IsNull() {
@@ -683,13 +683,13 @@ func (r *lightResource) Create(ctx context.Context, req resource.CreateRequest, 
 	if !m.Color.IsNull() && m.Color.ValueString() != "" {
 		params["color"] = m.Color.ValueString()
 	}
-	if !m.Energy.IsNull() {
+	if isConfigured(m.Energy) {
 		params["energy"] = m.Energy.ValueFloat64()
 	}
-	if !m.Range.IsNull() {
+	if isConfigured(m.Range) {
 		params["range"] = m.Range.ValueFloat64()
 	}
-	if !m.Shadows.IsNull() {
+	if isConfigured(m.Shadows) {
 		params["shadows"] = m.Shadows.ValueBool()
 	}
 	if !m.Asset.IsNull() && m.Asset.ValueString() != "" {

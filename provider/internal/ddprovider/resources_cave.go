@@ -85,11 +85,11 @@ func (r *caveResource) apply(ctx context.Context, m *caveModel) (string, diag.Di
 	} else {
 		return zero, attrError("points or x/y")
 	}
-	if !m.Radius.IsNull() {
+	if isConfigured(m.Radius) {
 		params["radius"] = m.Radius.ValueFloat64()
 	}
 	dig := true
-	if !m.Dig.IsNull() {
+	if isConfigured(m.Dig) {
 		dig = m.Dig.ValueBool()
 	}
 	params["dig"] = dig
@@ -111,7 +111,7 @@ func (r *caveResource) apply(ctx context.Context, m *caveModel) (string, diag.Di
 }
 
 func caveShapeKey(ctx context.Context, m *caveModel) string {
-	if !m.Points.IsNull() && !m.Points.IsUnknown() {
+	if isConfigured(m.Points) {
 		pts, _, _ := attrToPointList(ctx, m.Points)
 		return fmt.Sprintf("pts%v/r%v", pts, m.Radius.ValueFloat64())
 	}
@@ -166,7 +166,7 @@ func (r *caveResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 	// Genuine reversal: re-stamp the identical stroke with dig inverted (see
 	// the package doc comment on caveResource for the overlap caveat).
 	originalDig := true // apply()'s own default when Dig was left unset
-	if !m.Dig.IsNull() {
+	if isConfigured(m.Dig) {
 		originalDig = m.Dig.ValueBool()
 	}
 	m.Dig = types.BoolValue(!originalDig)

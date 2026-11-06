@@ -66,7 +66,7 @@ func (r *terrainFillResource) apply(ctx context.Context, m *terrainFillModel) (s
 		return zero, diagErrf("Provider not configured", "The bridge client was not available.")
 	}
 	slot := int64(0)
-	if !m.Slot.IsNull() {
+	if isConfigured(m.Slot) {
 		slot = m.Slot.ValueInt64()
 	}
 	params := map[string]any{"slot": slot}
@@ -122,7 +122,7 @@ func (r *terrainFillResource) apply(ctx context.Context, m *terrainFillModel) (s
 		cmd = "fill_terrain"
 	}
 
-	if !m.Rate.IsNull() {
+	if isConfigured(m.Rate) {
 		if haveShapeOrBrush {
 			params["rate"] = m.Rate.ValueFloat64()
 		} else {
@@ -143,12 +143,12 @@ func shapeKey(ctx context.Context, m *terrainFillModel) string {
 	if !m.X.IsNull() && !m.Y.IsNull() {
 		return fmt.Sprintf("xy%v,%v/r%v", m.X.ValueFloat64(), m.Y.ValueFloat64(), m.Radius.ValueFloat64())
 	}
-	if !m.Rect.IsNull() && !m.Rect.IsUnknown() {
+	if isConfigured(m.Rect) {
 		return fmt.Sprintf("rect%v", attrToNums(ctx, m.Rect))
 	}
-	if !m.Points.IsNull() && !m.Points.IsUnknown() {
+	if isConfigured(m.Points) {
 		pts, _, _ := attrToPointList(ctx, m.Points)
-		if !m.Radius.IsNull() {
+		if isConfigured(m.Radius) {
 			return fmt.Sprintf("pathpts%v/r%v", pts, m.Radius.ValueFloat64())
 		}
 		return fmt.Sprintf("pts%v", pts)

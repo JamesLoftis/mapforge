@@ -112,13 +112,13 @@ func (r *roomResource) Create(ctx context.Context, req resource.CreateRequest, r
 	if !m.WallAsset.IsNull() && m.WallAsset.ValueString() != "" {
 		params["wall_asset"] = m.WallAsset.ValueString()
 	}
-	if !m.WallType.IsNull() {
+	if isConfigured(m.WallType) {
 		params["wall_type"] = m.WallType.ValueInt64()
 	}
-	if !m.WallJoint.IsNull() {
+	if isConfigured(m.WallJoint) {
 		params["wall_joint"] = m.WallJoint.ValueInt64()
 	}
-	if !m.WallShadow.IsNull() {
+	if isConfigured(m.WallShadow) {
 		params["wall_shadow"] = m.WallShadow.ValueBool()
 	}
 	floorKind := "pattern"
@@ -135,7 +135,7 @@ func (r *roomResource) Create(ctx context.Context, req resource.CreateRequest, r
 	if !m.FloorColor.IsNull() && m.FloorColor.ValueString() != "" {
 		params["floor_color"] = m.FloorColor.ValueString()
 	}
-	if !m.FloorSlot.IsNull() {
+	if isConfigured(m.FloorSlot) {
 		params["floor_slot"] = m.FloorSlot.ValueInt64()
 	}
 

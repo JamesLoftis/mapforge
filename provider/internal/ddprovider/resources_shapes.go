@@ -76,13 +76,13 @@ func (r *roofResource) Create(ctx context.Context, req resource.CreateRequest, r
 		resp.Diagnostics.Append(diags...)
 		return
 	}
-	if !m.Width.IsNull() {
+	if isConfigured(m.Width) {
 		params["width"] = m.Width.ValueFloat64()
 	}
-	if !m.Type.IsNull() {
+	if isConfigured(m.Type) {
 		params["type"] = m.Type.ValueInt64()
 	}
-	if !m.Sorting.IsNull() {
+	if isConfigured(m.Sorting) {
 		params["sorting"] = m.Sorting.ValueInt64()
 	}
 	id, diags := createNode(ctx, c, "add_roof", params, m.Level.ValueString())
@@ -193,7 +193,7 @@ func (r *textResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 	params := map[string]any{"text": m.Text.ValueString(), "x": m.X.ValueFloat64(), "y": m.Y.ValueFloat64()}
-	if !m.Size.IsNull() {
+	if isConfigured(m.Size) {
 		params["size"] = m.Size.ValueInt64()
 	}
 	if !m.Color.IsNull() && m.Color.ValueString() != "" {
@@ -352,13 +352,13 @@ func (r *patternResource) Create(ctx context.Context, req resource.CreateRequest
 		params["category"] = m.Category.ValueString()
 	}
 	shapeSet := 0
-	if !m.Rect.IsNull() && !m.Rect.IsUnknown() {
+	if isConfigured(m.Rect) {
 		if r := attrToNums(ctx, m.Rect); r != nil {
 			params["rect"] = r
 			shapeSet++
 		}
 	}
-	if !m.Points.IsNull() && !m.Points.IsUnknown() {
+	if isConfigured(m.Points) {
 		if pts, ok, diags := attrToPointList(ctx, m.Points); ok {
 			params["points"] = pts
 			shapeSet++
@@ -374,10 +374,10 @@ func (r *patternResource) Create(ctx context.Context, req resource.CreateRequest
 	if !m.Color.IsNull() && m.Color.ValueString() != "" {
 		params["color"] = m.Color.ValueString()
 	}
-	if !m.Rotation.IsNull() {
+	if isConfigured(m.Rotation) {
 		params["rotation"] = m.Rotation.ValueFloat64()
 	}
-	if !m.Z.IsNull() {
+	if isConfigured(m.Z) {
 		params["z"] = m.Z.ValueInt64()
 	}
 	id, diags := createNode(ctx, c, "place_pattern", params, m.Level.ValueString())
@@ -413,7 +413,7 @@ func (r *patternResource) Read(ctx context.Context, req resource.ReadRequest, re
 	// be reconstructed from an arbitrary polygon, and writing points into a
 	// rect-based resource would churn forever (rect -> points each plan). A
 	// rect-declared pattern syncs only its level.
-	if !m.Points.IsNull() && !m.Points.IsUnknown() {
+	if isConfigured(m.Points) {
 		if pts, ok := desc["points"].([]any); ok {
 			m.Points = pointListToAttr(ctx, pts)
 		}
@@ -496,16 +496,16 @@ func (r *pathResource) Create(ctx context.Context, req resource.CreateRequest, r
 		resp.Diagnostics.Append(diags...)
 		return
 	}
-	if !m.Smoothness.IsNull() {
+	if isConfigured(m.Smoothness) {
 		params["smoothness"] = m.Smoothness.ValueFloat64()
 	}
-	if !m.Width.IsNull() {
+	if isConfigured(m.Width) {
 		params["width"] = m.Width.ValueFloat64()
 	}
-	if !m.Layer.IsNull() {
+	if isConfigured(m.Layer) {
 		params["layer"] = m.Layer.ValueInt64()
 	}
-	if !m.Sorting.IsNull() {
+	if isConfigured(m.Sorting) {
 		params["sorting"] = m.Sorting.ValueInt64()
 	}
 	id, diags := createNode(ctx, c, "draw_path", params, m.Level.ValueString())

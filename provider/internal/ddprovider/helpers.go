@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -79,4 +80,11 @@ func keepIfWithin(reported float64, current types.Float64, tolerance float64) ty
 		return current
 	}
 	return types.Float64Value(reported)
+}
+
+// isConfigured reports whether the config gives v. An optional, computed
+// attribute the config leaves out is unknown in a create plan, not null, so
+// checking IsNull alone sends its zero value.
+func isConfigured(v attr.Value) bool {
+	return !v.IsNull() && !v.IsUnknown()
 }
