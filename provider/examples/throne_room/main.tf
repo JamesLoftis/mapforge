@@ -46,6 +46,8 @@ resource "dungeondraft_wall" "throne_wall" {
 resource "dungeondraft_portal" "throne_door" {
   asset   = "res://textures/portals/door_04.png"
   wall_id = dungeondraft_wall.throne_wall.id
+  x       = local.throne_point[0]
+  y       = local.throne_point[1]
   radius  = 128
   closed  = false
 }
@@ -53,5 +55,8 @@ resource "dungeondraft_portal" "throne_door" {
 resource "dungeondraft_portal" "throne_window" {
   asset   = "res://textures/portals/window_02.png"
   wall_id = dungeondraft_wall.throne_wall.id
-  radius  = 64
+  # The middle of the wall's first segment.
+  x      = (local.throne_wall.points[0][0] + local.throne_wall.points[1][0]) / 2
+  y      = (local.throne_wall.points[0][1] + local.throne_wall.points[1][1]) / 2
+  radius = 64
 }

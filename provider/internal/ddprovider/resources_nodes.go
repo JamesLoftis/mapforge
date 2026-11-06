@@ -5,6 +5,7 @@ import (
 
 	bridge "dungeondraft-mcp/bridgeclient"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -14,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -121,7 +123,7 @@ func (r *wallResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
 			"joint": schema.Int64Attribute{Optional: true, Computed: true, Description: "0=sharp, 1=bevel, 2=round.",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
-			"color":  schema.StringAttribute{Optional: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"color":  schema.StringAttribute{Optional: true, Description: "#rrggbb; omit for the texture's own tint.", Validators: hexColorValidators, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			"shadow": schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
 			"level":  levelAttribute(),
 		},
@@ -263,10 +265,10 @@ func (r *portalResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			// these must be Optional+Computed — see the wall schema's comment.
 			// RequiresReplace still applies: there is no move/remount API for
 			// a portal, unlike a plain object.
-			"x": schema.Float64Attribute{Optional: true, Computed: true,
-				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
-			"y": schema.Float64Attribute{Optional: true, Computed: true,
-				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
+			"x": schema.Float64Attribute{Required: true, Description: "Where on its wall the door goes. Put it on the wall line: Read reports the snapped position, so an off-wall x/y shows as drift.",
+				PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"y": schema.Float64Attribute{Required: true,
+				PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
 			"wall_id": schema.Int64Attribute{Optional: true, Computed: true, Description: "Mount on this specific wall (skips nearest-wall search). Links to a dungeondraft_wall.",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
 			"radius": schema.Float64Attribute{Optional: true, Computed: true, Description: "Door half-width (~128 = 1-tile door).",
@@ -275,9 +277,9 @@ func (r *portalResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown(), boolplanmodifier.RequiresReplace()}},
 			"flip":          schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
 			"mount":         schema.StringAttribute{Optional: true, Description: "wall or free.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
-			"snap_max":      schema.Float64Attribute{Optional: true, Description: "Max woxel distance a wall may be and still capture the portal.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"snap_max":      schema.Float64Attribute{Optional: true, Description: "Max woxel distance a wall may be and still capture the portal. Default 256; at least 0.", Validators: []validator.Float64{float64validator.AtLeast(0)}, PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
 			"rotation":      schema.Float64Attribute{Optional: true, Description: "Degrees; freestanding only.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
-			"fallback_free": schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
+			"fallback_free": schema.BoolAttribute{Optional: true, Description: "With mount \"wall\" and no wall within snap_max, make a freestanding portal instead of failing. Default false.", PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
 			"level":         levelAttribute(),
 		},
 	}
@@ -427,15 +429,15 @@ func (r *objectResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			// drift, only a mismatch against an explicitly-set config value is).
 			// No RequiresReplace here: Update actually calls move_element /
 			// modify_object for these.
-			"x":        schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
-			"y":        schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
+			"x":        schema.Float64Attribute{Required: true},
+			"y":        schema.Float64Attribute{Required: true},
 			"rotation": schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
 			"scale":    schema.Float64Attribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown()}},
 			// color isn't in get_element's object descriptor at all, so it can't
 			// be Computed/drift-checked — but modify_object does accept it, so
 			// Update still applies an explicit change in place (write-only,
 			// like sorting/z, just not replace-on-change like them).
-			"color":   schema.StringAttribute{Optional: true},
+			"color":   schema.StringAttribute{Optional: true, Description: "#rrggbb tint; omit for none.", Validators: hexColorValidators},
 			"sorting": schema.Int64Attribute{Optional: true, Description: "0=over, 1=under.", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
 			"z":       schema.Int64Attribute{Optional: true, Description: "Absolute z_index (default 200; above legacy floors, below roofs).", PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
 			"level":   levelAttribute(),
@@ -642,13 +644,13 @@ func (r *lightResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 		Description: "A light at a woxel position (add_light). No modify-light API exists (unlike dungeondraft_object) — every attribute replaces on change.",
 		Attributes: map[string]schema.Attribute{
 			"id": idAttribute(),
-			"x": schema.Float64Attribute{Optional: true, Computed: true,
-				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
-			"y": schema.Float64Attribute{Optional: true, Computed: true,
-				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
-			"color":   schema.StringAttribute{Optional: true, Description: "#rrggbb", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
-			"energy":  schema.Float64Attribute{Optional: true, PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
-			"range":   schema.Float64Attribute{Optional: true, Description: "Radius scale.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"x": schema.Float64Attribute{Required: true,
+				PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"y": schema.Float64Attribute{Required: true,
+				PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"color":   schema.StringAttribute{Optional: true, Description: "#rrggbb; default #ffe6b3 (warm white).", Validators: hexColorValidators, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"energy":  schema.Float64Attribute{Optional: true, Description: "Default 1; at least 0.", Validators: []validator.Float64{float64validator.AtLeast(0)}, PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
+			"range":   schema.Float64Attribute{Optional: true, Description: "Radius scale. Default 1; at least 0.01.", Validators: []validator.Float64{float64validator.AtLeast(0.01)}, PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
 			"shadows": schema.BoolAttribute{Optional: true, PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
 			"asset": schema.StringAttribute{Optional: true, Computed: true, Description: "Lights gradient/cookie texture.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
@@ -667,18 +669,12 @@ func (r *lightResource) Create(ctx context.Context, req resource.CreateRequest, 
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	// x and y default to map center when omitted; take them as required to be
-	// declarative (a light placement is part of the plan).
 	params := map[string]any{}
 	if isConfigured(m.X) {
 		params["x"] = m.X.ValueFloat64()
 	}
 	if isConfigured(m.Y) {
 		params["y"] = m.Y.ValueFloat64()
-	}
-	if m.X.IsNull() || m.Y.IsNull() {
-		resp.Diagnostics.Append(diagErrf("Missing coordinates", "dungeondraft_light requires both x and y")...)
-		return
 	}
 	if !m.Color.IsNull() && m.Color.ValueString() != "" {
 		params["color"] = m.Color.ValueString()

@@ -4,6 +4,8 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
@@ -11,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -61,19 +64,44 @@ func (r *roomResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
 			"wall_shadow": schema.BoolAttribute{Optional: true, Description: "Default true.",
 				PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()}},
-			"floor": schema.StringAttribute{Optional: true, Description: "\"pattern\" (default), \"terrain\", or \"none\".",
+			"floor": schema.StringAttribute{Optional: true, Description: "\"pattern\" (default), \"terrain\", or \"none\".", Validators: []validator.String{stringvalidator.OneOf("pattern", "terrain", "none")},
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
-			"floor_asset": schema.StringAttribute{Optional: true, Description: "Pattern or terrain asset path; omit for the category/slot default.",
+			"floor_asset": schema.StringAttribute{Optional: true, Description: "Pattern or terrain asset path; required unless floor is \"none\".",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
-			"floor_category": schema.StringAttribute{Optional: true, Description: "Pattern asset category (default \"Simple Tiles\"); pattern floors only.",
+			"floor_category": schema.StringAttribute{Optional: true, Description: "Pattern asset category; required for a pattern floor.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
-			"floor_color": schema.StringAttribute{Optional: true, Description: "#rrggbb tint; pattern floors only.",
+			"floor_color": schema.StringAttribute{Optional: true, Description: "#rrggbb tint; pattern floors only.", Validators: hexColorValidators,
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			"floor_slot": schema.Int64Attribute{Optional: true, Description: "Terrain slot index (default 1); terrain floors only.",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
 			"floor_id": schema.StringAttribute{Computed: true, Description: "The floor pattern shape's element id. Only set when floor = \"pattern\" (terrain floors have no element id, like dungeondraft_terrain_fill)."},
 			"level":    levelAttribute(),
 		},
+	}
+}
+
+// ValidateConfig refuses at plan time a room whose floor the mod could not
+// make (classification rulings J3, J4): build_room creates its wall and its
+// floor or nothing.
+func (r *roomResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var floor, floorAsset, floorCategory types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("floor"), &floor)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("floor_asset"), &floorAsset)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("floor_category"), &floorCategory)...)
+	if resp.Diagnostics.HasError() || floor.IsUnknown() {
+		return
+	}
+	kind := floor.ValueString()
+	if floor.IsNull() {
+		kind = "pattern"
+	}
+	if kind != "none" && floorAsset.IsNull() {
+		resp.Diagnostics.AddAttributeError(path.Root("floor_asset"), "Missing floor_asset",
+			"A "+kind+" floor needs floor_asset; set floor = \"none\" for walls only.")
+	}
+	if kind == "pattern" && floorCategory.IsNull() {
+		resp.Diagnostics.AddAttributeError(path.Root("floor_category"), "Missing floor_category",
+			"A pattern floor needs floor_category, the asset bank floor_asset is in.")
 	}
 }
 

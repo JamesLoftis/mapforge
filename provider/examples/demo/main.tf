@@ -101,6 +101,8 @@ resource "dungeondraft_wall" "room" {
 resource "dungeondraft_portal" "door" {
   asset   = local.door
   wall_id = dungeondraft_wall.room.id
+  x       = local.cx           # on the south wall's line: Read reports the
+  y       = local.cy + local.h # snapped position, so an off-wall x/y drifts
   radius  = 64
 }
 

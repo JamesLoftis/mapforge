@@ -3,6 +3,8 @@ package ddprovider
 import (
 	"context"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float64planmodifier"
@@ -10,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -174,8 +177,8 @@ func (r *textResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			"text":  schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			"x":     schema.Float64Attribute{Required: true},
 			"y":     schema.Float64Attribute{Required: true},
-			"size":  schema.Int64Attribute{Optional: true, Computed: true, Description: "Font size in points.", PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
-			"color": schema.StringAttribute{Optional: true, Computed: true, Description: "#rrggbb", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
+			"size":  schema.Int64Attribute{Optional: true, Computed: true, Description: "Font size in points. Default 32; at least 1.", Validators: []validator.Int64{int64validator.AtLeast(1)}, PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()}},
+			"color": schema.StringAttribute{Optional: true, Computed: true, Description: "#rrggbb; default black.", Validators: hexColorValidators, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
 			"font":  schema.StringAttribute{Optional: true, Computed: true, Description: "A DD font name.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
 			"level": levelAttribute(),
 		},
@@ -316,13 +319,13 @@ func (r *patternResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"id": idAttribute(),
 			"asset": schema.StringAttribute{Required: true, Description: "A pattern asset path.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
-			"category": schema.StringAttribute{Optional: true, Description: "Patterns, Patterns Colorable, Materials, Simple Tiles, Smart Tiles.",
+			"category": schema.StringAttribute{Required: true, Description: "Patterns, Patterns Colorable, Materials, Simple Tiles, Smart Tiles.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			"rect": schema.ListAttribute{Optional: true, ElementType: types.Int64Type, Description: "[x, y, w, h] rectangle, alternative to points.",
 				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()}},
 			"points": schema.ListAttribute{Optional: true, ElementType: pointElemType, Description: "[[x,y], ...] polygon, alternative to rect.",
 				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()}},
-			"color": schema.StringAttribute{Optional: true, Description: "#rrggbb tint; omit for the tileset default.",
+			"color": schema.StringAttribute{Optional: true, Description: "#rrggbb tint; omit for an opaque neutral tint.", Validators: hexColorValidators,
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			"rotation": schema.Float64Attribute{Optional: true, Description: "Pattern rotation in degrees.",
 				PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
@@ -465,7 +468,7 @@ func (r *pathResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			"points": schema.ListAttribute{Required: true, ElementType: pointElemType,
 				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()}},
-			"smoothness": schema.Float64Attribute{Optional: true, Computed: true, Description: "Curve smoothing.",
+			"smoothness": schema.Float64Attribute{Optional: true, Computed: true, Description: "Curve smoothing; at least 0. Omit for Dungeondraft's own.", Validators: []validator.Float64{float64validator.AtLeast(0)},
 				PlanModifiers: []planmodifier.Float64{float64planmodifier.UseStateForUnknown(), float64planmodifier.RequiresReplace()}},
 			"width":   schema.Float64Attribute{Optional: true, Description: "Width scale multiplier.", PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()}},
 			"layer":   schema.Int64Attribute{Optional: true, PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},

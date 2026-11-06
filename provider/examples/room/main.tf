@@ -77,5 +77,7 @@ resource "dungeondraft_room" "study" {
 resource "dungeondraft_portal" "study_door" {
   asset   = local.door
   wall_id = dungeondraft_room.study.id
+  x       = local.cx # the middle of the south wall
+  y       = local.cy + local.h
   radius  = 64
 }

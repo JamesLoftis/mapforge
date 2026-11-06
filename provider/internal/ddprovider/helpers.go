@@ -3,8 +3,11 @@ package ddprovider
 import (
 	"context"
 	"math"
+	"regexp"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -87,4 +90,11 @@ func keepIfWithin(reported float64, current types.Float64, tolerance float64) ty
 // checking IsNull alone sends its zero value.
 func isConfigured(v attr.Value) bool {
 	return !v.IsNull() && !v.IsUnknown()
+}
+
+// hexColorValidators accept the colours the mod accepts as text: #rrggbb, or
+// #aarrggbb with Godot's alpha first; the # is optional.
+var hexColorValidators = []validator.String{
+	stringvalidator.RegexMatches(regexp.MustCompile(`^#?([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$`),
+		"must be #rrggbb or #aarrggbb"),
 }
