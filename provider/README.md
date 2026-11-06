@@ -8,8 +8,7 @@ The provider is a single static Go binary built on
 [`terraform-plugin-framework`](https://developer.hashicorp.com/terraform/plugin/framework).
 It does **not** go through the MCP server — it talks directly to `bridge_app`'s
 TCP/JSON wire protocol (see `PROTOCOL.md` in the repo root) using the shared
-`bridgeclient` module, exactly like `mcpserver` and the `ddcheck`/`crudge`
-CLI tools do.
+`bridgeclient` module, exactly like `mcpserver` does.
 
 ```
 terraform apply
@@ -98,21 +97,10 @@ mirror with `-plugin-dir`:
 
 (Keep `version` in sync with `ddprovider.version`.)
 
-### Schema validation without Terraform
-
-`go run ./cmd/tfcheck ../examples` parses every example `.tf` with the same HCL
-parser Terraform uses and checks every block type + attribute against the
-provider's registered schemas (it does not evaluate expressions — that is what
-`terraform plan` adds).
-
 ## Development utilities
 
-- `go run ./cmd/ddcheck` — reach out to the live bridge, print map status, and
-  report `dd_connected` (exit non-zero if the Dungeondraft mod is not linked).
-  Args: `[host] [port]`.
-- `go run ./cmd/crudge` — run a real create / read / delete sequence against the
-  live map and remove everything it made (proves the full round trip without
-  residue).
+- `go run ./cmd/catalog` — write every asset path in every category from the
+  live bridge to `asset_catalog.json`, a reference for writing Terraform.
 
 ## Known risk: saving right after a bulk apply
 

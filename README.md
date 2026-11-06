@@ -114,9 +114,7 @@ visible at a glance, not a refused connection.
 
 With DD open and a map loaded, `curl http://127.0.0.1:8788/health` confirms
 `dd_connected: true`, and calling `ping`/`get_status` through your MCP client
-confirms the whole chain end to end. (The `terraform-provider-dungeondraft`
-sibling repo also ships `cmd/ddcheck`/`cmd/crudge` live-bridge smoke tests, if
-you have that repo checked out too.)
+confirms the whole chain end to end.
 
 ### 3. Wire up your MCP client
 
