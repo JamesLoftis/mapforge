@@ -22,7 +22,7 @@ var script_class = "tool"
 
 const HOST := "127.0.0.1"
 const PORT := 8787
-const PROTOCOL_VERSION := 20
+const PROTOCOL_VERSION := 21
 const MAP_EXTENSION := ".dungeondraft_map"
 # Opening or creating a map restarts Dungeondraft's scene, which frees this
 # mod and loads a fresh instance on the new map, so the map op in flight is
@@ -49,6 +49,74 @@ const EDIT_CMDS := [
 ]
 # Commands that leave the open map; a pending autosave runs before them.
 const MAP_SWITCH_CMDS := ["open_map", "new_map"]
+
+# Every parameter each command reads, and the kind of value it must be
+# (plan 4, spec goal 3). A request is checked against this before it runs, so
+# a missing or malformed value is refused (bad_param) instead of being
+# replaced by a default. Commands with no entry check their own parameters
+# (map lifecycle, add_level) or are gated as broken (terrain, caves).
+const PARAM_KINDS := {
+	"place_object": { "asset": "string", "x": "number", "y": "number", "scale": "number",
+		"rotation": "number", "sorting": "whole", "color": "color", "z": "whole" },
+	"draw_wall": { "points": "points", "asset": "string", "type": "whole", "joint": "whole",
+		"loop": "bool", "shadow": "bool", "color": "color" },
+	"draw_path": { "points": "points", "asset": "string", "layer": "whole", "sorting": "whole",
+		"fade_in": "bool", "fade_out": "bool", "grow": "bool", "shrink": "bool",
+		"smoothness": "number", "width": "number" },
+	"add_light": { "x": "number", "y": "number", "color": "color", "energy": "number",
+		"range": "number", "shadows": "bool", "asset": "string" },
+	"add_portal": { "asset": "string", "x": "number", "y": "number", "closed": "bool",
+		"radius": "number", "mount": "string", "snap_max": "number", "wall_id": "whole",
+		"flip": "bool", "fallback_free": "bool", "rotation": "number" },
+	"add_roof": { "points": "points", "asset": "string", "type": "whole", "width": "number",
+		"sorting": "whole" },
+	"add_text": { "x": "number", "y": "number", "text": "nonempty", "size": "whole",
+		"color": "color", "font": "string" },
+	"place_pattern": { "category": "string", "asset": "string", "color": "color",
+		"rotation": "number", "rect": "rect", "points": "points", "z": "whole" },
+	"build_room": { "rect": "rect", "points": "points", "wall_asset": "string",
+		"wall_type": "whole", "wall_joint": "whole", "wall_shadow": "bool", "floor": "string",
+		"floor_asset": "string", "floor_category": "string", "floor_color": "color",
+		"floor_z": "whole", "floor_slot": "whole" },
+	"move_element": { "id": "whole", "x": "number", "y": "number" },
+	"modify_object": { "id": "whole", "scale": "number", "rotation": "number", "color": "color",
+		"shadow": "bool" },
+	"delete_element": { "id": "whole" },
+	"get_element": { "id": "whole" },
+	"focus_element": { "id": "whole", "zoom": "number" },
+	"fit_elements": { "ids": "ids", "pad": "number" },
+	"set_level": { "index": "whole" },
+	"set_camera": { "x": "number", "y": "number", "zoom": "number" },
+	"list_assets": { "category": "string", "search": "string", "limit": "whole" },
+	"list_elements": { "kind": "string", "limit": "whole" },
+	"export_map": { "path": "string", "ppi": "whole" },
+	"screenshot": { "path": "string" },
+}
+# Parameters a command cannot run without (classification rulings J1, J4).
+const REQUIRED_PARAMS := {
+	"place_object": ["x", "y"],
+	"add_light": ["x", "y"],
+	"add_portal": ["x", "y"],
+	"add_text": ["x", "y", "text"],
+	"place_pattern": ["category"],
+	"move_element": ["id", "x", "y"],
+	"modify_object": ["id"],
+	"delete_element": ["id"],
+	"get_element": ["id"],
+	"focus_element": ["id"],
+	"set_level": ["index"],
+}
+const PARAM_KIND_NEEDS := {
+	"number": "a number",
+	"whole": "a whole number",
+	"string": "a string",
+	"nonempty": "a non-empty string",
+	"bool": "true or false",
+	"color": "a colour, #rrggbb or [r, g, b]",
+	"points": "a list of [x, y] points",
+	"rect": "[x, y, w, h]",
+	"ids": "a list of whole-number ids",
+}
 
 # Neutral opaque tint for pattern floors when no color is given. PatternShapeTool
 # has no per-texture default (and its .Color leaks across calls), so we apply a
@@ -213,8 +281,11 @@ func _handle_request(line : String):
 	if not req.has("cmd"):
 		return
 	var resp
+	var param_problem := _param_problem(req)
 	if req.has("map") and not _is_open_map(req["map"]):
 		resp = _err_code("wrong_map", "command is for %s but %s is open" % [str(req["map"]), _open_map_description()])
+	elif param_problem != "":
+		resp = _err_code("bad_param", param_problem)
 	elif req.has("level"):
 		resp = _dispatch_on_level(req)
 	else:
@@ -241,6 +312,85 @@ func _dispatch_on_level(req : Dictionary) -> Dictionary:
 	if target != previous:
 		Global.World.SetLevel(previous, false)
 	return resp
+
+
+# ---------------------------------------------------------------------------
+# Parameter checks (plan 4)
+# ---------------------------------------------------------------------------
+
+# What is wrong with the request's parameters, or "" when nothing is.
+# Envelope keys (cmd, req_id, client, map, level) and unknown extra keys are
+# not in PARAM_KINDS, so they are never refused.
+func _param_problem(req : Dictionary) -> String:
+	var cmd = req.get("cmd", "")
+	if not PARAM_KINDS.has(cmd):
+		return ""
+	var kinds : Dictionary = PARAM_KINDS[cmd]
+	for name in REQUIRED_PARAMS.get(cmd, []):
+		if not req.has(name):
+			return "%s needs %s: %s" % [cmd, name, PARAM_KIND_NEEDS[kinds[name]]]
+	if kinds.has("x") and req.has("x") != req.has("y"):
+		return "%s needs x and y together (got only %s)" % [cmd, "x" if req.has("x") else "y"]
+	for name in kinds:
+		if req.has(name) and not call("_is_param_" + kinds[name], req[name]):
+			return "%s needs %s: %s (got %s)" % [cmd, name, PARAM_KIND_NEEDS[kinds[name]], JSON.print(req[name])]
+	return ""
+
+
+func _is_param_number(v) -> bool:
+	return typeof(v) == TYPE_INT or typeof(v) == TYPE_REAL
+
+
+# Godot's JSON parser reads every number as a float, so 200 arrives as 200.0.
+func _is_param_whole(v) -> bool:
+	return _is_param_number(v) and v == floor(v)
+
+
+func _is_param_string(v) -> bool:
+	return typeof(v) == TYPE_STRING
+
+
+func _is_param_nonempty(v) -> bool:
+	return _is_param_string(v) and v.strip_edges() != ""
+
+
+func _is_param_bool(v) -> bool:
+	return typeof(v) == TYPE_BOOL
+
+
+func _is_param_color(v) -> bool:
+	if _is_param_string(v):
+		return v.is_valid_html_color()
+	return typeof(v) == TYPE_ARRAY and v.size() in [3, 4] and _are_all_numbers(v)
+
+
+func _is_param_points(v) -> bool:
+	if typeof(v) != TYPE_ARRAY:
+		return false
+	for p in v:
+		if not (typeof(p) == TYPE_ARRAY and p.size() == 2 and _are_all_numbers(p)):
+			return false
+	return true
+
+
+func _is_param_rect(v) -> bool:
+	return typeof(v) == TYPE_ARRAY and v.size() == 4 and _are_all_numbers(v)
+
+
+func _is_param_ids(v) -> bool:
+	if typeof(v) != TYPE_ARRAY:
+		return false
+	for id in v:
+		if not _is_param_whole(id):
+			return false
+	return true
+
+
+func _are_all_numbers(values : Array) -> bool:
+	for v in values:
+		if not _is_param_number(v):
+			return false
+	return true
 
 
 # ---------------------------------------------------------------------------

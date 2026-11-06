@@ -1,7 +1,7 @@
 {
 	"name": "TF Bridge Agent",
 	"unique_id": "DDMCP.Agent",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"author": "JamesLoftis",
 	"description": "Outbound agent that bridges Dungeondraft to the standalone bridge app so an external TF provider can drive the open map.",
 	"dd_version": "1.2.0.1",
