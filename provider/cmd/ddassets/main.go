@@ -2,7 +2,7 @@
 // you can see on a map, with its picture, size, description and tags.
 //
 //	ddassets collect  [-limit N] [-kind K]   add new assets and save their pictures
-//	ddassets describe [-limit N]             draft descriptions and tags (SpriteForge)
+//	ddassets describe [-limit N] [-model M]  draft descriptions and tags (SpriteForge; Claude by default)
 //
 // The index is %LOCALAPPDATA%\DungeondraftBridge\assets\index.db, with
 // pictures\ and thumbs\ beside it (-dir overrides the folder).
@@ -42,6 +42,7 @@ func run(args []string) error {
 	limit := flags.Int("limit", 0, "assets to process this run (0 = all)")
 	kind := flags.String("kind", "", "only this kind (object, wall, floor tile, ...)")
 	dir := flags.String("dir", defaultDir(), "folder holding index.db, pictures and thumbs")
+	model := flags.String("model", "claude", "describe: SpriteForge's describe model (claude, or \"\" for its local default)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -60,7 +61,7 @@ func run(args []string) error {
 		_, err = c.Collect(ctx, CollectOptions{Limit: *limit, Kind: *kind})
 		return err
 	case "describe":
-		return describe(ctx, ix, *dir, *limit)
+		return describe(ctx, ix, *dir, *limit, *model)
 	default:
 		return fmt.Errorf("unknown command %q; want collect or describe", args[0])
 	}

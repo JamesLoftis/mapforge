@@ -130,3 +130,41 @@ func TestFocusGivesTheModelTheAssetsNameAndFolder(t *testing.T) {
 		}
 	}
 }
+
+func TestDescribeAsksForTheChosenModelAndReadsWhereAndPlacement(t *testing.T) {
+	var asked map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/studio/uploads":
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": "up1"})
+		case "/describe":
+			_ = json.NewDecoder(r.Body).Decode(&asked)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"description": "A heavy oak wardrobe.", "subject": "wardrobe", "style": "painted",
+				"setting": "bedroom", "where": []string{"Bedroom", "Noble house"}, "placement": "wall",
+			})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	ix, dir := indexWithPictures(t, Asset{Path: "res://a/wardrobe_01.png", Category: "Objects", Kind: "object"})
+	d := &Describer{Index: ix, Dir: dir, SpriteForge: &SpriteForgeClient{Base: srv.URL, Token: testToken, Model: "claude"}, Log: &bytes.Buffer{}}
+	if err := d.Describe(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if asked["model"] != "claude" {
+		t.Errorf("asked for model %q; want claude", asked["model"])
+	}
+	a, _, _ := ix.Get("res://a/wardrobe_01.png")
+	if strings.Join(a.TagsWhere, "|") != "bedroom|noble house" || a.Placement != "wall" {
+		t.Errorf("where=%v placement=%q; want the reply's where list and wall", a.TagsWhere, a.Placement)
+	}
+}
+
+func TestFocusSuggestsNoExamplePlaces(t *testing.T) {
+	focus := focusFor(Asset{Path: "res://a/b/thing.png", Kind: "object"})
+	for _, parroted := range []string{"kitchen", "tavern", "crypt", "forest"} {
+		if strings.Contains(focus, parroted) {
+			t.Errorf("focus suggests %q, which the model then repeats: %q", parroted, focus)
+		}
+	}
+}

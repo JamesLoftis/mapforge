@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	spriteForgeURL = "http://10.0.0.54:8760"
+	spriteForgeURL  = "http://10.0.0.54:8760"
 	describeTimeout = 3 * time.Minute
 )
 
@@ -41,12 +41,12 @@ type Describer struct {
 // errServiceDown means SpriteForge itself is not answering: stop, try again later.
 var errServiceDown = errors.New("SpriteForge isn't answering")
 
-func describe(ctx context.Context, ix *Index, dir string, limit int) error {
+func describe(ctx context.Context, ix *Index, dir string, limit int, model string) error {
 	token, err := os.ReadFile(filepath.Join(os.Getenv("USERPROFILE"), ".spriteforge-token"))
 	if err != nil {
 		return fmt.Errorf("reading the SpriteForge token: %w", err)
 	}
-	d := &Describer{Index: ix, Dir: dir, SpriteForge: &SpriteForgeClient{Base: spriteForgeURL, Token: strings.TrimSpace(string(token))}, Log: os.Stdout}
+	d := &Describer{Index: ix, Dir: dir, SpriteForge: &SpriteForgeClient{Base: spriteForgeURL, Token: strings.TrimSpace(string(token)), Model: model}, Log: os.Stdout}
 	return d.Describe(ctx, limit)
 }
 
@@ -94,8 +94,8 @@ func focusFor(asset Asset) string {
 	file := strings.TrimSuffix(path.Base(asset.Path), path.Ext(asset.Path))
 	folder := path.Base(path.Dir(asset.Path))
 	return fmt.Sprintf("A top-down Dungeondraft map asset (%s). Its file is '%s' in the folder '%s'. "+
-		"Say plainly what it is. For setting, name the kinds of places in a fantasy world where it would be found "+
-		"(for example kitchen, tavern, crypt, forest), not the background.", asset.Kind, file, folder)
+		"Say plainly what it is. For setting and where, name the kinds of places in a fantasy world where it "+
+		"would really be found, not the background; say 'anywhere' if it could be found anywhere.", asset.Kind, file, folder)
 }
 
 type describeReply struct {
@@ -103,12 +103,21 @@ type describeReply struct {
 	Subject     string `json:"subject"`
 	Style       string `json:"style"`
 	Setting     string `json:"setting"`
+	// Where and Placement come only from models that can give them (Claude).
+	Where     []string `json:"where"`
+	Placement string   `json:"placement"`
 }
 
 func withReply(a Asset, r describeReply) Asset {
 	a.Description = strings.TrimSpace(r.Description)
 	a.TagsWhat = tagList(r.Subject)
 	a.TagsWhere = tagList(r.Setting)
+	if len(r.Where) > 0 {
+		a.TagsWhere = tagList(strings.Join(r.Where, ","))
+	}
+	if r.Placement == "wall" || r.Placement == "center" {
+		a.Placement = r.Placement
+	}
 	a.TagsStyle = tagList(r.Style)
 	a.Error = ""
 	return a
@@ -167,6 +176,8 @@ func onParchment(picturePath string) ([]byte, error) {
 // is only ever sent as a header.
 type SpriteForgeClient struct {
 	Base, Token string
+	// Model is the describe model SpriteForge should use; "" means its default (local).
+	Model string
 }
 
 func (c *SpriteForgeClient) Describe(ctx context.Context, picture []byte, focus string) (describeReply, error) {
@@ -176,7 +187,11 @@ func (c *SpriteForgeClient) Describe(ctx context.Context, picture []byte, focus 
 	if err := c.post(ctx, "/studio/uploads", "image/png", picture, &upload); err != nil {
 		return describeReply{}, err
 	}
-	body, _ := json.Marshal(map[string]string{"upload": upload.ID, "focus": focus})
+	request := map[string]string{"upload": upload.ID, "focus": focus}
+	if c.Model != "" {
+		request["model"] = c.Model
+	}
+	body, _ := json.Marshal(request)
 	var reply describeReply
 	err := c.post(ctx, "/describe", "application/json", body, &reply)
 	return reply, err
