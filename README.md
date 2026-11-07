@@ -92,6 +92,11 @@ It:
   into the mods folder by hand before, the script stops rather than delete
   your copy: move it aside and re-run.
 
+Dungeondraft must load mods from that same folder: its mods folder setting
+(`mods_directory` in `%APPDATA%\Dungeondraft\config.ini`) has to name it. If it
+names another folder, Dungeondraft never sees the link, and if that folder is
+later moved or deleted, Dungeondraft crashes at startup.
+
 Close Claude Code first if it is running `mcpserver.exe`: Windows will not
 overwrite a running program.
 
