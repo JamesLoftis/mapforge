@@ -13,9 +13,8 @@
 # fix in mcp_bridge.gd, change it here too -- there is no automated check
 # that these stay identical, only this comment.
 #
-# Root-caused by tracing Dungeondraft's terrain behaviour: splatImage2
-# is only ever
-# created by ExpandSlots(true), and RestoreSplat2's real signature is
+# Root-caused by tracing Dungeondraft's terrain behaviour: splatImage2 is
+# only ever created by ExpandSlots(true), and RestoreSplat2's real signature is
 # (Image splat, Image splat2) -- both halves together, CopyFrom'd into
 # already-existing images, not a replacement. See mcp_bridge.gd's own
 # comment on _open_splat for the two wrong approaches this replaced.

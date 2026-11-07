@@ -6,3 +6,6 @@
 
 # Runtime-generated mod icon
 mod/dungeondraft-mcp-bridge-agent/icons/mcp_bridge.png
+
+# Design notes and plans are kept outside the public repo.
+docs/

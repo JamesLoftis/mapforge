@@ -1,10 +1,9 @@
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 
 # The project is MapForge. The old name stays only where something else depends
-# on it (de-fork design, "the rename rule"), or in history.
+# on it (the mod's folder, the MCP server's name, the credit), or in history.
 $allowedPaths = @(
     '^CHANGELOG\.md:',
-    '^docs/superpowers/',
     '^scripts/tests/OldNames\.Tests\.ps1:'  # this test's own search pattern
 )
 $allowedText = @(

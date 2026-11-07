@@ -3,8 +3,7 @@
 # _close_splat -- see that file's header for why this can't live inside
 # the mod's own directory tree, or be loaded from it at runtime, at all.
 #
-# Covers the actual, root-caused fix :
-# slots 4-7 need ExpandSlots(true) called once
+# Covers the actual, root-caused fix: slots 4-7 need ExpandSlots(true) called once
 # to allocate splatImage2 -- neither of two earlier, wrong attempts
 # (hand-rolling a blank Image into RestoreSplat2, or calling Fill() on an
 # unexpanded level) actually worked, both discovered by testing against a

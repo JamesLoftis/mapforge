@@ -211,7 +211,6 @@ mod/            the Dungeondraft mod: one GDScript file, scripts/tools/mcp_bridg
 mod_tests/      tests for the mod's GDScript logic (run with a Godot 3.4.2 editor)
 integration/    tests against a live Dungeondraft, through bridge_app and Terraform
 scripts/        install.ps1 and its Pester tests (scripts/tests)
-docs/           design specs and plans (docs/superpowers), and a checklist
 ```
 
 **Tests.**

@@ -10,7 +10,7 @@ import (
 	bridge "mapforge/bridgeclient"
 )
 
-// Plan 4 (spec goal 3, docs/superpowers/specs/2026-11-05-mod-fallback-classification.md):
+// Required means required:
 // the mod refuses a missing or malformed value with code bad_param and runs
 // nothing, instead of substituting a default.
 
