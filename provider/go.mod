@@ -8,6 +8,7 @@ require github.com/hashicorp/terraform-plugin-framework v1.19.0
 
 require (
 	github.com/hashicorp/terraform-plugin-framework-validators v0.19.0
+	golang.org/x/image v0.47.0
 	modernc.org/sqlite v1.62.0
 )
 
