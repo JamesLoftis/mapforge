@@ -22,7 +22,7 @@ var script_class = "tool"
 
 const HOST := "127.0.0.1"
 const PORT := 8787
-const PROTOCOL_VERSION := 21
+const PROTOCOL_VERSION := 22
 const MAP_EXTENSION := ".dungeondraft_map"
 # Opening or creating a map restarts Dungeondraft's scene, which frees this
 # mod and loads a fresh instance on the new map, so the map op in flight is
@@ -90,6 +90,7 @@ const PARAM_KINDS := {
 	"list_assets": { "category": "string", "search": "string", "limit": "whole" },
 	"list_elements": { "kind": "string", "limit": "whole" },
 	"export_map": { "path": "string", "ppi": "whole" },
+	"export_asset": { "category": "nonempty", "path": "nonempty", "out": "nonempty" },
 	"screenshot": { "path": "string" },
 }
 # Parameters a command cannot run without (classification rulings J1, J4).
@@ -105,6 +106,7 @@ const REQUIRED_PARAMS := {
 	"get_element": ["id"],
 	"focus_element": ["id"],
 	"set_level": ["index"],
+	"export_asset": ["category", "path", "out"],
 }
 const PARAM_KIND_NEEDS := {
 	"number": "a number",
@@ -583,6 +585,7 @@ func _dispatch(req : Dictionary) -> Dictionary:
 		# --- capture ---
 		"screenshot": return _screenshot(req)
 		"export_map": return _export_map(req)
+		"export_asset": return _export_asset(req)
 		# --- camera ---
 		"get_camera": return _get_camera()
 		"set_camera": return _set_camera(req)
@@ -2057,6 +2060,28 @@ func _export_map(req : Dictionary) -> Dictionary:
 	if ppi <= 0: return _err("'ppi' must be > 0")
 	Global.Exporter.Start(0, ppi, path)  # mode 0 = PNG
 	return _ok({ "path": path, "ppi": ppi, "async": true })
+
+
+# Saves one asset's picture as a PNG, so tools outside Dungeondraft (the asset
+# index) can see assets sealed inside Dungeondraft's own files and packs. A
+# texture kept compressed in video memory comes back compressed and has to be
+# decompressed before it can be written.
+func _export_asset(req : Dictionary) -> Dictionary:
+	var path = str(req["path"])
+	var out = str(req["out"])
+	# Dungeondraft's own loader: plain load() cannot open assets inside add-on packs.
+	var texture = _asset_tex(str(req["category"]), path)
+	if not (texture is Texture):
+		return _err("could not load asset '" + path + "' as a picture")
+	var image = texture.get_data()
+	if image == null:
+		return _err("asset '" + path + "' has no picture data")
+	if image.is_compressed():
+		image.decompress()
+	var saved = image.save_png(out)
+	if saved != OK:
+		return _err("could not write '" + out + "' (error " + str(saved) + ")")
+	return _ok({ "path": path, "out": out, "width": image.get_width(), "height": image.get_height() })
 
 
 # ---------------------------------------------------------------------------

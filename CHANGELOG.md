@@ -17,6 +17,9 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ### Added
 
+- Protocol 22: `export_asset` saves any asset's picture (built-in or from an
+  add-on pack) as a PNG, for the asset index. Restart Dungeondraft so it loads
+  the new mod.
 - `ddmap`, a small command-line tool for other programs (Campaign Creator):
   `ddmap new` creates and saves a blank map, `ddmap export` renders the open
   map to a PNG; both wait for Dungeondraft to finish. Installed by

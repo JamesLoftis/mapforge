@@ -254,6 +254,7 @@ from compositing, so the frame can go stale there — for a capture that works
 while DD is minimized, render the map with `export_map` instead (background
 thread, headless).
 | `export_map` | `path`, `ppi=40` | `{ path, ppi, async }` — full-map render on a background thread; poll `path` for the file |
+| `export_asset` | `category`, `path`, `out` — all required | `{ path, out, width, height }` — saves one asset's picture as a PNG at `out` (synchronous), using Dungeondraft's own loader so assets inside add-on packs work; an asset that cannot be loaded is an error naming it |
 
 ### Autosave
 
