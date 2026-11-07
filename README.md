@@ -79,7 +79,7 @@ which is its default.)
 The script is the deploy step; re-run it after every `git pull` or local edit.
 It:
 
-- builds `mcpserver.exe`, `bridge_app.exe` and `dd-launch.exe` into
+- builds `mcpserver.exe`, `bridge_app.exe`, `dd-launch.exe` and `ddmap.exe` into
   `%LOCALAPPDATA%\DungeondraftBridge\bin\`, stamped with a version from
   `git describe`;
 - builds the Terraform provider into Terraform's local mirror
@@ -151,6 +151,10 @@ are in the [provider reference](provider/README.md). More worked examples are in
 
 **Saving.** You never need to save after an apply: once the provider's edits
 have been quiet for 3 seconds, Dungeondraft saves the map to `map_file` itself.
+
+**For other tools.** `ddmap new -w <tiles> -h <tiles> -out <path>` creates a
+blank map and saves it; `ddmap export -ppi <n> -out <file.png>` renders the
+open map to a PNG. Both wait until Dungeondraft has finished.
 
 **Finding asset paths.** With Dungeondraft open,
 `cd provider; go run ./cmd/catalog` writes every asset path in every category

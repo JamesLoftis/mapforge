@@ -17,6 +17,11 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 
 ### Added
 
+- `ddmap`, a small command-line tool for other programs (Campaign Creator):
+  `ddmap new` creates and saves a blank map, `ddmap export` renders the open
+  map to a PNG; both wait for Dungeondraft to finish. Installed by
+  `scripts/install.ps1`.
+
 - `bridge_app` writes a command log: one JSON line per command, written
   before the command is forwarded, plus its outcome and duration
   (`commands_<stamp>.jsonl` beside the other launch logs; see PROTOCOL.md,

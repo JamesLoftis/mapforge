@@ -85,6 +85,7 @@ function Get-ProviderVersion {
 Build-Binary -ModuleDir (Join-Path $repoRoot "mcpserver") -PackagePath "./cmd/mcpserver" -OutFile (Join-Path $installDir "mcpserver.exe") -VersionLdflags "-X main.version=$version"
 Build-Binary -ModuleDir (Join-Path $repoRoot "bridge_app") -PackagePath "./cmd/bridge_app" -OutFile (Join-Path $installDir "bridge_app.exe") -VersionLdflags "-X main.version=$version"
 Build-Binary -ModuleDir (Join-Path $repoRoot "bridge_app") -PackagePath "./cmd/dd-launch" -OutFile (Join-Path $installDir "dd-launch.exe")
+Build-Binary -ModuleDir (Join-Path $repoRoot "provider") -PackagePath "./cmd/ddmap" -OutFile (Join-Path $installDir "ddmap.exe")
 
 # Terraform selects the provider by the version in this path and file name, not
 # by what the binary reports.
