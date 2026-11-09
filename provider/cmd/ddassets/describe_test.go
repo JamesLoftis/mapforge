@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testToken = "secret-token-123"
@@ -166,5 +167,32 @@ func TestFocusSuggestsNoExamplePlaces(t *testing.T) {
 		if strings.Contains(focus, parroted) {
 			t.Errorf("focus suggests %q, which the model then repeats: %q", parroted, focus)
 		}
+	}
+}
+
+func TestDescribeRidesOutAPassingOutage(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/studio/uploads":
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": "up1"})
+		case "/describe":
+			calls++
+			if calls == 1 {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(squidReply)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	ix, dir := indexWithPictures(t, Asset{Path: "res://a/squid.png", Category: "Objects", Kind: "object"})
+	d := &Describer{Index: ix, Dir: dir, SpriteForge: &SpriteForgeClient{Base: srv.URL, Token: testToken}, Log: &bytes.Buffer{},
+		RetryWaits: []time.Duration{time.Millisecond}}
+	if err := d.Describe(context.Background(), 0); err != nil {
+		t.Fatalf("a single 502 stopped the run: %v", err)
+	}
+	if a, _, _ := ix.Get("res://a/squid.png"); a.Description == "" {
+		t.Errorf("the asset was not described after the retry")
 	}
 }

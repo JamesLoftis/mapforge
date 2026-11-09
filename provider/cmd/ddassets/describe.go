@@ -36,7 +36,13 @@ type Describer struct {
 	Dir         string
 	SpriteForge *SpriteForgeClient
 	Log         io.Writer
+	// RetryWaits are the pauses before trying again while SpriteForge is not
+	// answering; once they are used up the run stops. None means stop at once.
+	RetryWaits []time.Duration
 }
+
+// overnightRetryWaits ride out a passing outage during a long run.
+var overnightRetryWaits = []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute}
 
 // errServiceDown means SpriteForge itself is not answering: stop, try again later.
 var errServiceDown = errors.New("SpriteForge isn't answering")
@@ -46,7 +52,8 @@ func describe(ctx context.Context, ix *Index, dir string, limit int, model strin
 	if err != nil {
 		return fmt.Errorf("reading the SpriteForge token: %w", err)
 	}
-	d := &Describer{Index: ix, Dir: dir, SpriteForge: &SpriteForgeClient{Base: spriteForgeURL, Token: strings.TrimSpace(string(token)), Model: model}, Log: os.Stdout}
+	d := &Describer{Index: ix, Dir: dir, SpriteForge: &SpriteForgeClient{Base: spriteForgeURL, Token: strings.TrimSpace(string(token)), Model: model}, Log: os.Stdout,
+		RetryWaits: overnightRetryWaits}
 	return d.Describe(ctx, limit)
 }
 
@@ -61,7 +68,7 @@ func (d *Describer) Describe(ctx context.Context, limit int) error {
 			break
 		}
 		started := time.Now()
-		reply, err := d.describeOne(ctx, asset)
+		reply, err := d.describeWithRetries(ctx, asset)
 		if errors.Is(err, errServiceDown) {
 			return fmt.Errorf("%w (%d described this run; the rest stay pending): %v", errServiceDown, done, err)
 		}
@@ -78,6 +85,23 @@ func (d *Describer) Describe(ctx context.Context, limit int) error {
 	}
 	fmt.Fprintf(d.Log, "describe: %d assets described\n", done)
 	return nil
+}
+
+func (d *Describer) describeWithRetries(ctx context.Context, asset Asset) (describeReply, error) {
+	reply, err := d.describeOne(ctx, asset)
+	for _, wait := range d.RetryWaits {
+		if !errors.Is(err, errServiceDown) {
+			break
+		}
+		fmt.Fprintf(d.Log, "SpriteForge isn't answering (%v); trying again in %s\n", err, wait)
+		select {
+		case <-ctx.Done():
+			return reply, ctx.Err()
+		case <-time.After(wait):
+		}
+		reply, err = d.describeOne(ctx, asset)
+	}
+	return reply, err
 }
 
 func (d *Describer) describeOne(ctx context.Context, asset Asset) (describeReply, error) {
