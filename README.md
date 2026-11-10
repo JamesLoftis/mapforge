@@ -163,6 +163,12 @@ with a picture, a thumbnail and, for objects, its size in tiles; `ddassets
 describe` drafts a description and tags for each. Both only do what is new, and
 a correction made by hand is never overwritten.
 
+Describing takes about 9 seconds an asset, so you need not describe everything
+up front: `ddassets describe <res://path> ...` describes just the assets you
+name, skipping any already described and collecting any that are new (that part
+needs Dungeondraft open). Search matches file and folder names as well as
+descriptions and tags, so an asset can be found before it is described.
+
 **Finding asset paths.** With Dungeondraft open,
 `cd provider; go run ./cmd/catalog` writes every asset path in every category
 to `asset_catalog.json`. In Terraform, the `dungeondraft_assets` data source

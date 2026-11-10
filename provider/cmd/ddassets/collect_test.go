@@ -16,9 +16,13 @@ type fakeBridge struct {
 	sizes   map[string][2]int   // path -> picture size; default 256x256
 	failing map[string]bool
 	exports []string
+	closed  bool // Dungeondraft is not running
 }
 
 func (f *fakeBridge) ListAssets(_ context.Context, category string) ([]string, error) {
+	if f.closed {
+		return nil, errors.New("could not reach the Dungeondraft bridge")
+	}
 	return f.assets[category], nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"image"
 	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -194,5 +195,91 @@ func TestDescribeRidesOutAPassingOutage(t *testing.T) {
 	}
 	if a, _, _ := ix.Get("res://a/squid.png"); a.Description == "" {
 		t.Errorf("the asset was not described after the retry")
+	}
+}
+
+func newDescriber(t *testing.T, srvURL string, ix *Index, dir string, bridge *fakeBridge) *Describer {
+	t.Helper()
+	return &Describer{Index: ix, Dir: dir, SpriteForge: &SpriteForgeClient{Base: srvURL, Token: testToken}, Log: &bytes.Buffer{},
+		Collector: &Collector{Index: ix, Bridge: bridge, Dir: dir, Log: io.Discard}}
+}
+
+func TestDescribePathsDescribesOnlyTheNamedAssets(t *testing.T) {
+	srv, _ := fakeSpriteForge(t, http.StatusOK, squidReply)
+	ix, dir := indexWithPictures(t,
+		Asset{Path: "res://a/one.png", Category: "Objects", Kind: "object"},
+		Asset{Path: "res://a/two.png", Category: "Objects", Kind: "object"},
+		Asset{Path: "res://a/three.png", Category: "Objects", Kind: "object"})
+	d := newDescriber(t, srv.URL, ix, dir, &fakeBridge{})
+	if err := d.DescribePaths(context.Background(), []string{"res://a/one.png", "res://a/two.png"}); err != nil {
+		t.Fatal(err)
+	}
+	if p := paths(mustPending(t, ix)); len(p) != 1 || p[0] != "res://a/three.png" {
+		t.Errorf("still pending = %v; want only three", p)
+	}
+}
+
+func TestDescribePathsSkipsWhatIsAlreadyDescribed(t *testing.T) {
+	srv, tokens := fakeSpriteForge(t, http.StatusOK, squidReply)
+	ix, dir := indexWithPictures(t, Asset{Path: "res://a/done.png", Category: "Objects", Kind: "object", Description: "a chair"})
+	d := newDescriber(t, srv.URL, ix, dir, &fakeBridge{})
+	if err := d.DescribePaths(context.Background(), []string{"res://a/done.png"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*tokens) != 0 {
+		t.Errorf("%d SpriteForge requests for an asset already described; want none", len(*tokens))
+	}
+}
+
+func TestDescribePathsCollectsAnAssetNewToTheIndex(t *testing.T) {
+	srv, _ := fakeSpriteForge(t, http.StatusOK, squidReply)
+	ix, dir := indexWithPictures(t)
+	bridge := &fakeBridge{assets: map[string][]string{"Objects": {"res://a/new.png", "res://a/other.png"}}}
+	d := newDescriber(t, srv.URL, ix, dir, bridge)
+	if err := d.DescribePaths(context.Background(), []string{"res://a/new.png"}); err != nil {
+		t.Fatal(err)
+	}
+	a, _, _ := ix.Get("res://a/new.png")
+	if a.Description != squidReply["description"] || a.Picture == "" {
+		t.Errorf("new asset = %+v; want it pictured and described", a)
+	}
+	if len(bridge.exports) != 1 {
+		t.Errorf("exported %v; want only the named asset", bridge.exports)
+	}
+}
+
+func TestDescribePathsNamesAPathDungeondraftDoesNotHave(t *testing.T) {
+	srv, _ := fakeSpriteForge(t, http.StatusOK, squidReply)
+	ix, dir := indexWithPictures(t)
+	bridge := &fakeBridge{assets: map[string][]string{"Objects": {"res://a/known.png"}}}
+	d := newDescriber(t, srv.URL, ix, dir, bridge)
+	err := d.DescribePaths(context.Background(), []string{"res://a/missing.png", "res://a/known.png"})
+	if err == nil || !strings.Contains(err.Error(), "res://a/missing.png") {
+		t.Fatalf("got %v; want an error naming the missing path", err)
+	}
+	if a, _, _ := ix.Get("res://a/known.png"); a.Description == "" {
+		t.Errorf("the known asset was not described after the missing one")
+	}
+}
+
+func mustPending(t *testing.T, ix *Index) []Asset {
+	t.Helper()
+	pending, err := ix.Pending("describe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pending
+}
+
+func TestDescribePathsStillDescribesKnownAssetsWhenDungeondraftIsClosed(t *testing.T) {
+	srv, _ := fakeSpriteForge(t, http.StatusOK, squidReply)
+	ix, dir := indexWithPictures(t, Asset{Path: "res://a/known.png", Category: "Objects", Kind: "object"})
+	d := newDescriber(t, srv.URL, ix, dir, &fakeBridge{closed: true})
+	err := d.DescribePaths(context.Background(), []string{"res://a/new.png", "res://a/known.png"})
+	if err == nil || !strings.Contains(err.Error(), "res://a/new.png") || !strings.Contains(err.Error(), "Dungeondraft bridge") {
+		t.Fatalf("got %v; want an error naming the uncollected path and why", err)
+	}
+	if a, _, _ := ix.Get("res://a/known.png"); a.Description == "" {
+		t.Errorf("the known asset was not described while Dungeondraft was closed")
 	}
 }

@@ -3,6 +3,7 @@
 //
 //	ddassets collect  [-limit N] [-kind K]   add new assets and save their pictures
 //	ddassets describe [-limit N] [-model M]  draft descriptions and tags (SpriteForge; Claude by default)
+//	ddassets describe [-model M] <path> ...  describe just these assets, collecting any that are new
 //
 // The index is %LOCALAPPDATA%\DungeondraftBridge\assets\index.db, with
 // pictures\ and thumbs\ beside it (-dir overrides the folder).
@@ -55,13 +56,20 @@ func run(args []string) error {
 	}
 	defer ix.Close()
 	ctx := context.Background()
+	collector := &Collector{Index: ix, Bridge: liveBridge{bridge.New(bridgeHost, bridgePort)}, Dir: *dir, Log: os.Stdout}
 	switch args[0] {
 	case "collect":
-		c := &Collector{Index: ix, Bridge: liveBridge{bridge.New(bridgeHost, bridgePort)}, Dir: *dir, Log: os.Stdout}
-		_, err = c.Collect(ctx, CollectOptions{Limit: *limit, Kind: *kind})
+		_, err = collector.Collect(ctx, CollectOptions{Limit: *limit, Kind: *kind})
 		return err
 	case "describe":
-		return describe(ctx, ix, *dir, *limit, *model)
+		d, err := liveDescriber(collector, *model)
+		if err != nil {
+			return err
+		}
+		if named := flags.Args(); len(named) > 0 {
+			return d.DescribePaths(ctx, named)
+		}
+		return d.Describe(ctx, *limit)
 	default:
 		return fmt.Errorf("unknown command %q; want collect or describe", args[0])
 	}

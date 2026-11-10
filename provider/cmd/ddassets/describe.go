@@ -36,6 +36,9 @@ type Describer struct {
 	Dir         string
 	SpriteForge *SpriteForgeClient
 	Log         io.Writer
+	// Collector brings in named assets the index has no picture of yet; only
+	// DescribePaths needs it.
+	Collector *Collector
 	// RetryWaits are the pauses before trying again while SpriteForge is not
 	// answering; once they are used up the run stops. None means stop at once.
 	RetryWaits []time.Duration
@@ -47,16 +50,18 @@ var overnightRetryWaits = []time.Duration{30 * time.Second, time.Minute, 2 * tim
 // errServiceDown means SpriteForge itself is not answering: stop, try again later.
 var errServiceDown = errors.New("SpriteForge isn't answering")
 
-func describe(ctx context.Context, ix *Index, dir string, limit int, model string) error {
+// liveDescriber describes with the real SpriteForge, collecting through collector.
+func liveDescriber(collector *Collector, model string) (*Describer, error) {
 	token, err := os.ReadFile(filepath.Join(os.Getenv("USERPROFILE"), ".spriteforge-token"))
 	if err != nil {
-		return fmt.Errorf("reading the SpriteForge token: %w", err)
+		return nil, fmt.Errorf("reading the SpriteForge token: %w", err)
 	}
-	d := &Describer{Index: ix, Dir: dir, SpriteForge: &SpriteForgeClient{Base: spriteForgeURL, Token: strings.TrimSpace(string(token)), Model: model}, Log: os.Stdout,
-		RetryWaits: overnightRetryWaits}
-	return d.Describe(ctx, limit)
+	client := &SpriteForgeClient{Base: spriteForgeURL, Token: strings.TrimSpace(string(token)), Model: model}
+	return &Describer{Index: collector.Index, Dir: collector.Dir, SpriteForge: client, Log: os.Stdout,
+		Collector: collector, RetryWaits: overnightRetryWaits}, nil
 }
 
+// Describe describes every asset still pending a description, up to limit (0 = all).
 func (d *Describer) Describe(ctx context.Context, limit int) error {
 	pending, err := d.Index.Pending("describe")
 	if err != nil {
@@ -67,24 +72,106 @@ func (d *Describer) Describe(ctx context.Context, limit int) error {
 		if limit > 0 && done >= limit {
 			break
 		}
-		started := time.Now()
-		reply, err := d.describeWithRetries(ctx, asset)
-		if errors.Is(err, errServiceDown) {
-			return fmt.Errorf("%w (%d described this run; the rest stay pending): %v", errServiceDown, done, err)
-		}
-		if err != nil {
-			asset.Error = err.Error()
-		} else {
-			asset = withReply(asset, reply)
-		}
-		if err := d.Index.Upsert(asset); err != nil {
-			return err
+		if _, err := d.describeAndSave(ctx, asset); err != nil {
+			return fmt.Errorf("%w (%d described this run; the rest stay pending)", err, done)
 		}
 		done++
-		fmt.Fprintf(d.Log, "%.1fs  %s: %s\n", time.Since(started).Seconds(), path.Base(asset.Path), firstLine(asset.Description, asset.Error))
 	}
 	fmt.Fprintf(d.Log, "describe: %d assets described\n", done)
 	return nil
+}
+
+// DescribePaths describes just the named assets, collecting any the index has
+// no picture of yet; ones already described are left alone. Every path is
+// tried, and the ones that could not be described are named in the error.
+func (d *Describer) DescribePaths(ctx context.Context, paths []string) error {
+	// Collecting can fail (Dungeondraft closed) without stopping the assets
+	// the index already has a picture of.
+	collectFailure := d.collectMissing(ctx, paths)
+	whyUnknown := "Dungeondraft has no such asset"
+	if collectFailure != nil {
+		whyUnknown = "not in the index yet"
+	}
+	var failures []string
+	for _, p := range paths {
+		failure, err := d.describeNamed(ctx, p, whyUnknown)
+		if err != nil {
+			return err
+		}
+		if failure != "" {
+			failures = append(failures, p+": "+failure)
+		}
+	}
+	if len(failures) == 0 {
+		return nil
+	}
+	summary := fmt.Sprintf("could not describe %d of %d assets: %s", len(failures), len(paths), strings.Join(failures, "; "))
+	if collectFailure != nil {
+		return fmt.Errorf("%s (collecting from Dungeondraft failed: %w)", summary, collectFailure)
+	}
+	return errors.New(summary)
+}
+
+func (d *Describer) collectMissing(ctx context.Context, paths []string) error {
+	var missing []string
+	for _, p := range paths {
+		asset, found, err := d.Index.Get(p)
+		if err != nil {
+			return err
+		}
+		if !found || asset.Picture == "" {
+			missing = append(missing, p)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	if d.Collector == nil {
+		return fmt.Errorf("%d named assets need collecting from Dungeondraft first, and no bridge was given", len(missing))
+	}
+	return d.Collector.CollectPaths(ctx, missing)
+}
+
+// describeNamed describes one named asset if it still needs it, and says why
+// it could not (whyUnknown, for a path the index does not hold); only
+// SpriteForge being down, or the index failing, is an error.
+func (d *Describer) describeNamed(ctx context.Context, p, whyUnknown string) (failure string, err error) {
+	asset, found, err := d.Index.Get(p)
+	switch {
+	case err != nil:
+		return "", err
+	case !found:
+		return whyUnknown, nil
+	case asset.Description != "":
+		return "", nil
+	case asset.Picture == "" && asset.Error != "":
+		return "no picture: " + asset.Error, nil
+	case asset.Picture == "":
+		return "no picture yet", nil
+	}
+	saved, err := d.describeAndSave(ctx, asset)
+	return saved.Error, err
+}
+
+// describeAndSave describes one asset and saves the outcome. A failure for
+// this asset alone is recorded on it; only SpriteForge being down, or the
+// index failing, is returned.
+func (d *Describer) describeAndSave(ctx context.Context, asset Asset) (Asset, error) {
+	started := time.Now()
+	reply, err := d.describeWithRetries(ctx, asset)
+	if errors.Is(err, errServiceDown) {
+		return asset, err
+	}
+	if err != nil {
+		asset.Error = err.Error()
+	} else {
+		asset = withReply(asset, reply)
+	}
+	if err := d.Index.Upsert(asset); err != nil {
+		return asset, err
+	}
+	fmt.Fprintf(d.Log, "%.1fs  %s: %s\n", time.Since(started).Seconds(), path.Base(asset.Path), firstLine(asset.Description, asset.Error))
+	return asset, nil
 }
 
 func (d *Describer) describeWithRetries(ctx context.Context, asset Asset) (describeReply, error) {

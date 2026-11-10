@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 
@@ -13,6 +14,10 @@ import (
 
 // SchemaVersion is what other readers of the index (Campaign Creator) check.
 const SchemaVersion = 1
+
+// searchTextVersion changes whenever searchText does; an index holding older
+// search text has it rebuilt when opened.
+const searchTextVersion = "2"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -104,7 +109,46 @@ func OpenIndex(path string) (*Index, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Index{db: db}, nil
+	ix := &Index{db: db}
+	if err := ix.refreshSearchText(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("rebuilding the search text in %s: %w", path, err)
+	}
+	return ix, nil
+}
+
+func (ix *Index) refreshSearchText() error {
+	var version string
+	err := ix.db.QueryRow(`SELECT value FROM meta WHERE key = 'search_text_version'`).Scan(&version)
+	if err == nil && version == searchTextVersion {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	rows, err := ix.db.Query(selectAssets)
+	if err != nil {
+		return err
+	}
+	assets, err := scanAssets(rows)
+	if err != nil {
+		return err
+	}
+	tx, err := ix.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, a := range assets {
+		if err := writeSearchText(tx, a); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO meta (key, value) VALUES ('search_text_version', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, searchTextVersion); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (ix *Index) Close() error { return ix.db.Close() }
@@ -140,13 +184,18 @@ func (ix *Index) Upsert(a Asset) error {
 	if err != nil {
 		return fmt.Errorf("saving %s: %w", a.Path, err)
 	}
-	if _, err := tx.Exec(`DELETE FROM assets_fts WHERE path = ?`, a.Path); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`INSERT INTO assets_fts (path, text) VALUES (?, ?)`, a.Path, searchText(a)); err != nil {
+	if err := writeSearchText(tx, a); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func writeSearchText(tx *sql.Tx, a Asset) error {
+	if _, err := tx.Exec(`DELETE FROM assets_fts WHERE path = ?`, a.Path); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`INSERT INTO assets_fts (path, text) VALUES (?, ?)`, a.Path, searchText(a))
+	return err
 }
 
 func merged(old, next Asset) Asset {
@@ -270,14 +319,29 @@ func scanAssets(rows *sql.Rows) ([]Asset, error) {
 	return assets, rows.Err()
 }
 
+// genericFolders say nothing about what an asset is, so they are left out of its search text.
+var genericFolders = map[string]bool{"": true, "res:": true, "packs": true, "textures": true}
+
+// searchText is what full-text search matches: the file and folder names, so
+// an undescribed asset can still be found, then the description and tags.
+// Campaign Creator's library.ts mirrors it; change both, and searchTextVersion.
 func searchText(a Asset) string {
-	name := a.Path[strings.LastIndex(a.Path, "/")+1:]
-	name = strings.NewReplacer("_", " ", "-", " ", ".png", "", ".webp", "").Replace(name)
-	parts := []string{name, a.Kind, a.Description}
+	folders, file := path.Split(a.Path)
+	parts := []string{nameWords(strings.TrimSuffix(file, path.Ext(file)))}
+	for _, folder := range strings.Split(folders, "/") {
+		if !genericFolders[folder] {
+			parts = append(parts, nameWords(folder))
+		}
+	}
+	parts = append(parts, a.Kind, a.Description)
 	parts = append(parts, a.TagsWhat...)
 	parts = append(parts, a.TagsWhere...)
 	parts = append(parts, a.TagsStyle...)
 	return strings.Join(parts, " ")
+}
+
+func nameWords(name string) string {
+	return strings.NewReplacer("_", " ", "-", " ").Replace(name)
 }
 
 // ftsWords turns free text into an FTS5 query where every word must match (as a prefix).

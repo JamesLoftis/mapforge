@@ -108,3 +108,47 @@ func paths(assets []Asset) []string {
 	}
 	return out
 }
+
+const tableInAFolder = "res://packs/P/textures/objects/furniture/long_tables/oak_01.png"
+
+func TestSearchFindsAnUndescribedAssetByItsFolder(t *testing.T) {
+	ix := openTestIndex(t)
+	if err := ix.Upsert(Asset{Path: tableInAFolder, Category: "Objects", Kind: "object"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ix.Search(Query{Text: "tables", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Errorf("Search(tables) = %v; want the oak table found by its folder", paths(got))
+	}
+}
+
+func TestOpeningAnIndexWithOldSearchTextRebuildsIt(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "index.db")
+	ix, err := OpenIndex(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = ix.Upsert(Asset{Path: tableInAFolder, Category: "Objects", Kind: "object"})
+	_, _ = ix.db.Exec(`UPDATE assets_fts SET text = 'oak 01 object'`)
+	_, _ = ix.db.Exec(`DELETE FROM meta WHERE key = 'search_text_version'`)
+	ix.Close()
+
+	ix = openIndexAt(t, file)
+	got, _ := ix.Search(Query{Text: "tables", Limit: 10})
+	if len(got) != 1 {
+		t.Errorf("after reopening, Search(tables) = %v; want the old row's search text rebuilt", paths(got))
+	}
+}
+
+func openIndexAt(t *testing.T, file string) *Index {
+	t.Helper()
+	ix, err := OpenIndex(file)
+	if err != nil {
+		t.Fatalf("OpenIndex: %v", err)
+	}
+	t.Cleanup(func() { ix.Close() })
+	return ix
+}

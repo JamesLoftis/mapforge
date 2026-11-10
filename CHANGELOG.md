@@ -20,6 +20,9 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
 - `ddassets`, the asset index: `collect` lists every visible asset in every
   pack into a SQLite index with its picture, thumbnail and size; `describe`
   drafts descriptions and tags. Hand corrections are never overwritten.
+  `describe <path> ...` describes just the named assets, collecting any that
+  are new, so descriptions can be added as assets are used. Search also
+  matches folder names; an older index has its search text rebuilt when opened.
 - Protocol 22: `export_asset` saves any asset's picture (built-in or from an
   add-on pack) as a PNG, for the asset index. Restart Dungeondraft so it loads
   the new mod.
