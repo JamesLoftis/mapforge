@@ -40,7 +40,8 @@ type Describer struct {
 	// DescribePaths needs it.
 	Collector *Collector
 	// RetryWaits are the pauses before trying again while SpriteForge is not
-	// answering; once they are used up the run stops. None means stop at once.
+	// answering, in a run over everything pending; once they are used up the
+	// run stops. None means stop at once. Named assets are never waited for.
 	RetryWaits []time.Duration
 }
 
@@ -49,6 +50,15 @@ var overnightRetryWaits = []time.Duration{30 * time.Second, time.Minute, 2 * tim
 
 // errServiceDown means SpriteForge itself is not answering: stop, try again later.
 var errServiceDown = errors.New("SpriteForge isn't answering")
+
+// errServiceRefused means SpriteForge answered but will serve no asset (wrong
+// token, no such route): stop, and do not wait, since waiting will not help.
+var errServiceRefused = errors.New("SpriteForge refused the request")
+
+var errNoDescription = errors.New("SpriteForge gave no description")
+
+// noWaits is for an asset wanted now: one attempt, no riding out an outage.
+var noWaits []time.Duration
 
 // liveDescriber describes with the real SpriteForge, collecting through collector.
 func liveDescriber(collector *Collector, model string) (*Describer, error) {
@@ -67,17 +77,25 @@ func (d *Describer) Describe(ctx context.Context, limit int) error {
 	if err != nil {
 		return err
 	}
-	done := 0
+	described, failed := 0, 0
 	for _, asset := range pending {
-		if limit > 0 && done >= limit {
+		if limit > 0 && described+failed >= limit {
 			break
 		}
-		if _, err := d.describeAndSave(ctx, asset); err != nil {
-			return fmt.Errorf("%w (%d described this run; the rest stay pending)", err, done)
+		saved, err := d.describeAndSave(ctx, asset, d.RetryWaits)
+		if err != nil {
+			return fmt.Errorf("%w (%d described this run; the rest stay pending)", err, described)
 		}
-		done++
+		if saved.Error == "" {
+			described++
+		} else {
+			failed++
+		}
 	}
-	fmt.Fprintf(d.Log, "describe: %d assets described\n", done)
+	fmt.Fprintf(d.Log, "describe: %d assets described, %d failed\n", described, failed)
+	if failed > 0 {
+		return fmt.Errorf("could not describe %d of %d assets; each one's error is recorded in the index", failed, described+failed)
+	}
 	return nil
 }
 
@@ -96,7 +114,7 @@ func (d *Describer) DescribePaths(ctx context.Context, paths []string) error {
 	for _, p := range paths {
 		failure, err := d.describeNamed(ctx, p, whyUnknown)
 		if err != nil {
-			return err
+			return stoppedAfter(failures, err)
 		}
 		if failure != "" {
 			failures = append(failures, p+": "+failure)
@@ -110,6 +128,15 @@ func (d *Describer) DescribePaths(ctx context.Context, paths []string) error {
 		return fmt.Errorf("%s (collecting from Dungeondraft failed: %w)", summary, collectFailure)
 	}
 	return errors.New(summary)
+}
+
+// stoppedAfter is the error for a run that had to stop, still naming the
+// assets that had already failed.
+func stoppedAfter(failures []string, cause error) error {
+	if len(failures) == 0 {
+		return cause
+	}
+	return fmt.Errorf("%w (before that, could not describe: %s)", cause, strings.Join(failures, "; "))
 }
 
 func (d *Describer) collectMissing(ctx context.Context, paths []string) error {
@@ -142,24 +169,25 @@ func (d *Describer) describeNamed(ctx context.Context, p, whyUnknown string) (fa
 		return "", err
 	case !found:
 		return whyUnknown, nil
-	case asset.Description != "":
+	case asset.HasSettledDescription():
 		return "", nil
 	case asset.Picture == "" && asset.Error != "":
 		return "no picture: " + asset.Error, nil
 	case asset.Picture == "":
 		return "no picture yet", nil
 	}
-	saved, err := d.describeAndSave(ctx, asset)
+	saved, err := d.describeAndSave(ctx, asset, noWaits)
 	return saved.Error, err
 }
 
-// describeAndSave describes one asset and saves the outcome. A failure for
-// this asset alone is recorded on it; only SpriteForge being down, or the
-// index failing, is returned.
-func (d *Describer) describeAndSave(ctx context.Context, asset Asset) (Asset, error) {
+// describeAndSave describes one asset and saves the outcome, riding out an
+// outage for as long as retryWaits allow. A failure for this asset alone is
+// recorded on it; only SpriteForge being down or refusing, or the index
+// failing, is returned.
+func (d *Describer) describeAndSave(ctx context.Context, asset Asset, retryWaits []time.Duration) (Asset, error) {
 	started := time.Now()
-	reply, err := d.describeWithRetries(ctx, asset)
-	if errors.Is(err, errServiceDown) {
+	reply, err := d.describeWithRetries(ctx, asset, retryWaits)
+	if errors.Is(err, errServiceDown) || errors.Is(err, errServiceRefused) {
 		return asset, err
 	}
 	if err != nil {
@@ -174,9 +202,9 @@ func (d *Describer) describeAndSave(ctx context.Context, asset Asset) (Asset, er
 	return asset, nil
 }
 
-func (d *Describer) describeWithRetries(ctx context.Context, asset Asset) (describeReply, error) {
+func (d *Describer) describeWithRetries(ctx context.Context, asset Asset, retryWaits []time.Duration) (describeReply, error) {
 	reply, err := d.describeOne(ctx, asset)
-	for _, wait := range d.RetryWaits {
+	for _, wait := range retryWaits {
 		if !errors.Is(err, errServiceDown) {
 			break
 		}
@@ -196,7 +224,11 @@ func (d *Describer) describeOne(ctx context.Context, asset Asset) (describeReply
 	if err != nil {
 		return describeReply{}, err
 	}
-	return d.SpriteForge.Describe(ctx, picture, focusFor(asset))
+	reply, err := d.SpriteForge.Describe(ctx, picture, focusFor(asset))
+	if err == nil && strings.TrimSpace(reply.Description) == "" {
+		return reply, errNoDescription
+	}
+	return reply, err
 }
 
 // focusFor tells the vision model what the picture is and what to say about
@@ -322,12 +354,21 @@ func (c *SpriteForgeClient) post(ctx context.Context, route, contentType string,
 		return fmt.Errorf("%w: %s", errServiceDown, route)
 	}
 	defer res.Body.Close()
-	if res.StatusCode >= http.StatusInternalServerError {
+	switch {
+	case res.StatusCode == http.StatusOK:
+		return json.NewDecoder(res.Body).Decode(out)
+	case res.StatusCode >= http.StatusInternalServerError || res.StatusCode == http.StatusTooManyRequests:
 		return fmt.Errorf("%w: %s answered %s", errServiceDown, route, res.Status)
-	}
-	if res.StatusCode != http.StatusOK {
+	case refusesEveryAsset[res.StatusCode]:
+		return fmt.Errorf("%w: %s answered %s", errServiceRefused, route, res.Status)
+	default:
 		detail, _ := io.ReadAll(io.LimitReader(res.Body, 300))
 		return fmt.Errorf("%s answered %s: %s", route, res.Status, strings.TrimSpace(string(detail)))
 	}
-	return json.NewDecoder(res.Body).Decode(out)
+}
+
+// refusesEveryAsset are the answers that are about the caller or the route,
+// not about the one picture sent.
+var refusesEveryAsset = map[int]bool{
+	http.StatusUnauthorized: true, http.StatusForbidden: true, http.StatusNotFound: true,
 }

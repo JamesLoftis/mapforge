@@ -8,6 +8,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -18,6 +19,10 @@ const SchemaVersion = 1
 // searchTextVersion changes whenever searchText does; an index holding older
 // search text has it rebuilt when opened.
 const searchTextVersion = "2"
+
+// lockWait is how long a write waits for another program (Campaign Creator,
+// a second ddassets) to finish writing the same index before giving up.
+const lockWait = 5 * time.Second
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -97,7 +102,10 @@ func PackOf(path string) string {
 }
 
 func OpenIndex(path string) (*Index, error) {
-	db, err := sql.Open("sqlite", path)
+	// A write takes its lock when its transaction begins, so what it reads
+	// inside the transaction cannot change before it writes.
+	dsn := fmt.Sprintf("%s?_pragma=busy_timeout(%d)&_txlock=immediate", path, lockWait.Milliseconds())
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening the asset index %s: %w", path, err)
 	}
@@ -156,7 +164,12 @@ func (ix *Index) Close() error { return ix.db.Close() }
 // Upsert adds an asset or updates it. A non-empty new value replaces the old
 // one unless the GM corrected that field by hand; empty values never erase.
 func (ix *Index) Upsert(a Asset) error {
-	old, found, err := ix.Get(a.Path)
+	tx, err := ix.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	old, found, err := assetAt(tx, a.Path)
 	if err != nil {
 		return err
 	}
@@ -166,11 +179,6 @@ func (ix *Index) Upsert(a Asset) error {
 	if a.Pack == "" {
 		a.Pack = PackOf(a.Path)
 	}
-	tx, err := ix.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	_, err = tx.Exec(`INSERT INTO assets (path, category, pack, kind, width_tiles, height_tiles, placement, description,
 		tags_what, tags_where, tags_style, picture, thumb, error, hand_edited)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -236,8 +244,23 @@ func merged(old, next Asset) Asset {
 	return out
 }
 
+// HasSettledDescription reports whether there is nothing to draft: the asset
+// is described, or the GM set its description by hand (even to nothing).
+func (a Asset) HasSettledDescription() bool {
+	return a.Description != "" || slices.Contains(a.HandEdited, "description")
+}
+
 func (ix *Index) Get(path string) (Asset, bool, error) {
-	rows, err := ix.db.Query(selectAssets+` WHERE path = ?`, path)
+	return assetAt(ix.db, path)
+}
+
+// assetReader is the index itself, or a transaction on it.
+type assetReader interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+func assetAt(reader assetReader, path string) (Asset, bool, error) {
+	rows, err := reader.Query(selectAssets+` WHERE path = ?`, path)
 	if err != nil {
 		return Asset{}, false, err
 	}
@@ -282,14 +305,14 @@ func (ix *Index) Search(q Query) ([]Asset, error) {
 }
 
 // Pending lists the assets a stage still has to do: "picture" (no picture yet)
-// or "describe" (a picture but no description).
+// or "describe" (a picture but no description, and none set by the GM).
 func (ix *Index) Pending(stage string) ([]Asset, error) {
 	var where string
 	switch stage {
 	case "picture":
 		where = `picture = ''`
 	case "describe":
-		where = `picture <> '' AND description = ''`
+		where = `picture <> '' AND description = '' AND hand_edited NOT LIKE '%"description"%'`
 	default:
 		return nil, errors.New("unknown stage " + stage)
 	}

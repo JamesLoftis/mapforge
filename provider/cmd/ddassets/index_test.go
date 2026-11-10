@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func openTestIndex(t *testing.T) *Index {
@@ -151,4 +154,55 @@ func openIndexAt(t *testing.T, file string) *Index {
 	}
 	t.Cleanup(func() { ix.Close() })
 	return ix
+}
+
+func TestAnAssetWhoseDescriptionTheGMSetIsNotPendingDescribing(t *testing.T) {
+	ix := openTestIndex(t)
+	asset := Asset{Path: "res://a/one.png", Category: "Objects", Kind: "object", Picture: "one.png", HandEdited: []string{"description"}}
+	if err := ix.Upsert(asset); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := ix.Pending("describe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("%d assets pending describing; want none", len(pending))
+	}
+}
+
+func TestUpsertWaitsForAnotherWriterToFinish(t *testing.T) {
+	indexPath := filepath.Join(t.TempDir(), "index.db")
+	ix, err := OpenIndex(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ix.Close()
+	other, err := sql.Open("sqlite", indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	ctx := context.Background()
+	writer, err := other.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if _, err := writer.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	const otherWriterHolds = 150 * time.Millisecond
+	released := make(chan error, 1)
+	go func() {
+		time.Sleep(otherWriterHolds)
+		_, err := writer.ExecContext(ctx, "COMMIT")
+		released <- err
+	}()
+	if err := ix.Upsert(Asset{Path: "res://a/one.png", Category: "Objects", Kind: "object"}); err != nil {
+		t.Errorf("Upsert gave up instead of waiting: %v", err)
+	}
+	if err := <-released; err != nil {
+		t.Fatal(err)
+	}
 }

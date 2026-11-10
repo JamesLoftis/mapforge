@@ -23,6 +23,9 @@ here (`git tag vX.Y.Z`) to have it show up in `/health` and the MCP
   `describe <path> ...` describes just the named assets, collecting any that
   are new, so descriptions can be added as assets are used. Search also
   matches folder names; an older index has its search text rebuilt when opened.
+  A named describe never waits out an outage; a refused token stops the run;
+  failed assets are counted and give a non-zero exit; writes wait for another
+  program writing the index.
 - Protocol 22: `export_asset` saves any asset's picture (built-in or from an
   add-on pack) as a PNG, for the asset index. Restart Dungeondraft so it loads
   the new mod.

@@ -169,6 +169,12 @@ name, skipping any already described and collecting any that are new (that part
 needs Dungeondraft open). Search matches file and folder names as well as
 descriptions and tags, so an asset can be found before it is described.
 
+If SpriteForge is not answering, a run over everything waits a few minutes for
+it and then stops; a run over named assets stops at once. A wrong token stops
+either straight away. The exit status is non-zero whenever any asset could not
+be described. Writes wait up to five seconds for another program using the
+index (Campaign Creator) to finish its own.
+
 **Finding asset paths.** With Dungeondraft open,
 `cd provider; go run ./cmd/catalog` writes every asset path in every category
 to `asset_catalog.json`. In Terraform, the `dungeondraft_assets` data source

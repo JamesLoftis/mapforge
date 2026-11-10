@@ -283,3 +283,90 @@ func TestDescribePathsStillDescribesKnownAssetsWhenDungeondraftIsClosed(t *testi
 		t.Errorf("the known asset was not described while Dungeondraft was closed")
 	}
 }
+
+func TestDescribePathsDoesNotWaitOutAnOutage(t *testing.T) {
+	srv, requests := fakeSpriteForge(t, http.StatusServiceUnavailable, nil)
+	ix, dir := indexWithPictures(t, Asset{Path: "res://a/one.png", Category: "Objects", Kind: "object"})
+	d := newDescriber(t, srv.URL, ix, dir, &fakeBridge{})
+	d.RetryWaits = []time.Duration{time.Millisecond, time.Millisecond}
+	err := d.DescribePaths(context.Background(), []string{"res://a/one.png"})
+	if err == nil || !strings.Contains(err.Error(), "SpriteForge") {
+		t.Fatalf("got %v; want an error naming SpriteForge", err)
+	}
+	const requestsPerAttempt = 2
+	if len(*requests) != requestsPerAttempt {
+		t.Errorf("%d requests; want %d (one attempt, no waiting)", len(*requests), requestsPerAttempt)
+	}
+}
+
+func TestDescribePathsStillNamesEarlierFailuresWhenSpriteForgeIsDown(t *testing.T) {
+	srv, _ := fakeSpriteForge(t, http.StatusServiceUnavailable, nil)
+	ix, dir := indexWithPictures(t, Asset{Path: "res://a/one.png", Category: "Objects", Kind: "object"})
+	d := newDescriber(t, srv.URL, ix, dir, &fakeBridge{})
+	err := d.DescribePaths(context.Background(), []string{"res://a/missing.png", "res://a/one.png"})
+	if err == nil || !strings.Contains(err.Error(), "SpriteForge") || !strings.Contains(err.Error(), "res://a/missing.png") {
+		t.Fatalf("got %v; want SpriteForge named and the missing path too", err)
+	}
+}
+
+func TestAReplyWithNoDescriptionIsAFailure(t *testing.T) {
+	srv, _ := fakeSpriteForge(t, http.StatusOK, map[string]any{"description": "  ", "subject": "squid"})
+	ix, dir := indexWithPictures(t, Asset{Path: "res://a/one.png", Category: "Objects", Kind: "object"})
+	d := newDescriber(t, srv.URL, ix, dir, &fakeBridge{})
+	err := d.DescribePaths(context.Background(), []string{"res://a/one.png"})
+	if err == nil || !strings.Contains(err.Error(), "res://a/one.png") {
+		t.Fatalf("got %v; want the asset named as not described", err)
+	}
+	if a, _, _ := ix.Get("res://a/one.png"); a.Error == "" {
+		t.Errorf("no error recorded on the asset")
+	}
+}
+
+func TestDescribePathsLeavesADescriptionTheGMSetAlone(t *testing.T) {
+	srv, requests := fakeSpriteForge(t, http.StatusOK, squidReply)
+	ix, dir := indexWithPictures(t, Asset{Path: "res://a/one.png", Category: "Objects", Kind: "object", HandEdited: []string{"description"}})
+	d := newDescriber(t, srv.URL, ix, dir, &fakeBridge{})
+	if err := d.DescribePaths(context.Background(), []string{"res://a/one.png"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*requests) != 0 {
+		t.Errorf("%d requests to SpriteForge; want none", len(*requests))
+	}
+}
+
+func TestDescribeStopsAtOnceWhenSpriteForgeRefusesTheToken(t *testing.T) {
+	srv, requests := fakeSpriteForge(t, http.StatusUnauthorized, nil)
+	ix, dir := indexWithPictures(t,
+		Asset{Path: "res://a/one.png", Category: "Objects", Kind: "object"},
+		Asset{Path: "res://a/two.png", Category: "Objects", Kind: "object"})
+	d := newDescriber(t, srv.URL, ix, dir, &fakeBridge{})
+	d.RetryWaits = []time.Duration{time.Millisecond}
+	err := d.Describe(context.Background(), 0)
+	if err == nil || !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("got %v; want an error saying SpriteForge refused", err)
+	}
+	const requestsPerAttempt = 2
+	if len(*requests) != requestsPerAttempt {
+		t.Errorf("%d requests; want %d (stop at the first refusal)", len(*requests), requestsPerAttempt)
+	}
+	if a, _, _ := ix.Get("res://a/one.png"); a.Error != "" {
+		t.Errorf("the refusal was recorded as the asset's own failure: %s", a.Error)
+	}
+}
+
+func TestDescribeSaysHowManyAssetsFailed(t *testing.T) {
+	srv, _ := fakeSpriteForge(t, http.StatusBadRequest, nil)
+	ix, dir := indexWithPictures(t,
+		Asset{Path: "res://a/one.png", Category: "Objects", Kind: "object"},
+		Asset{Path: "res://a/two.png", Category: "Objects", Kind: "object"})
+	log := &bytes.Buffer{}
+	d := newDescriber(t, srv.URL, ix, dir, &fakeBridge{})
+	d.Log = log
+	err := d.Describe(context.Background(), 0)
+	if err == nil || !strings.Contains(err.Error(), "2 of 2") {
+		t.Fatalf("got %v; want an error counting 2 of 2 failed", err)
+	}
+	if !strings.Contains(log.String(), "0 assets described, 2 failed") {
+		t.Errorf("last line does not count the failures:\n%s", log.String())
+	}
+}
