@@ -48,8 +48,10 @@ func main() {
 	bridgeLog := filepath.Join(logsDir, fmt.Sprintf("bridge_%s.log", stamp))
 	commandLog := filepath.Join(logsDir, logpaths.CommandLogName(stamp))
 
+	// A map path (dd-launch [flags] <map>) opens Dungeondraft straight into that map's editor, where its
+	// enabled mods start, so the bridge connects with no clicks at the launcher.
 	fmt.Printf("starting Dungeondraft: %s (log: %s)\n", *ddPath, ddLog)
-	if err := startDetachedLogged(*ddPath, nil, ddLog); err != nil {
+	if err := startDetachedLogged(*ddPath, flag.Args(), ddLog); err != nil {
 		log.Fatalf("starting Dungeondraft: %v", err)
 	}
 

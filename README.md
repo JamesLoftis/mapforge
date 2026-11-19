@@ -106,7 +106,9 @@ Then:
    `%LOCALAPPDATA%\DungeondraftBridge\bin\dd-launch.exe` (point your shortcut at
    it). It starts Dungeondraft and `bridge_app` together and writes their logs.
    It looks for `C:\Program Files\Dungeondraft\Dungeondraft.exe`; if yours is
-   elsewhere, pass `-dd-path <path>` or set `DD_EXE_PATH`.
+   elsewhere, pass `-dd-path <path>` or set `DD_EXE_PATH`. Give it a map
+   (`dd-launch.exe C:/maps/first.dungeondraft_map`) to open that map straight away, skipping the launcher, so
+   the mod connects with no clicks; tools use this to start Dungeondraft themselves.
 2. In Dungeondraft, enable the **TF Bridge Agent** mod.
 3. Check the chain: `curl.exe http://127.0.0.1:8788/health` shows
    `"dd_connected": true`.
